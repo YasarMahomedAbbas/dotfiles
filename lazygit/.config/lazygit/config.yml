@@ -1,0 +1,6 @@
+gui:
+  showFileTree: false
+
+git:
+  pagers:
+    - pager: delta --side-by-side --dark --paging=never

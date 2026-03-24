@@ -1,0 +1,5 @@
+# Nvim lazy lockfile (machine-specific, regenerated automatically)
+nvim/.config/nvim/lazy-lock.json
+
+# Tmux plugins (installed by TPM automatically)
+tmux/.tmux/plugins/

@@ -1,0 +1,36 @@
+[user]
+	name = yasarmahomedabbas
+	email = yasar.tm44@gmail.com
+[core]
+    pager = diffnav
+
+[interactive]
+    diffFilter = delta --color-only
+
+[delta]
+    navigate = true
+    syntax-theme = base16
+    minus-style = syntax "#3d1117"
+    minus-emph-style = syntax "#6e3630"
+    plus-style = syntax "#1b3a2a"
+	plus-emph-style = "syntax #2a6233"
+    line-numbers-minus-style = "#da3633"
+    line-numbers-plus-style = "#3fb950"
+    line-numbers-zero-style = "#484f58"
+    hunk-header-style = file line-number syntax
+    hunk-header-decoration-style = "#3b434b" box
+    file-style = bold "#e6edf3"
+    file-decoration-style = none
+    minus-non-emph-style = syntax "#3d1117"
+	plus-non-emph-style = "syntax #1b2d1f"
+    whitespace-error-style = "#f85149" reverse
+    dark = true
+	line-numbers = true
+	line-fill-method = spaces
+	side-by-side = true
+
+[alias]
+    dd = diff develop
+
+[merge]
+    conflictStyle = zdiff3
