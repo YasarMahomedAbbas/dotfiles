@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Resolve the target directory
+if [ -n "$1" ]; then
+    DIR=$(realpath "$1")
+else
+    DIR=$(pwd)
+fi
+
+if [ ! -d "$DIR" ]; then
+    echo "Error: '$DIR' is not a directory"
+    exit 1
+fi
+
+# Use the directory's basename as the window name
+NAME=$(basename "$DIR")
+
+# Create a new window in the current session (or a standalone session if not in tmux)
+if [ -n "$TMUX" ]; then
+    tmux new-window -n "$NAME" -c "$DIR"
+    WINDOW=$(tmux display-message -p '#I')
+    SESSION=$(tmux display-message -p '#S')
+    tmux split-window -h -t "$SESSION:$WINDOW" -c "$DIR" -p 25
+    tmux send-keys -t "$SESSION:$WINDOW.1" "nvim" Enter
+    tmux send-keys -t "$SESSION:$WINDOW.2" "claude" Enter
+    tmux select-pane -t "$SESSION:$WINDOW.1"
+else
+    SESSION="work-$$"
+    tmux new-session -d -s "$SESSION" -n "$NAME" -c "$DIR" -x "$(tput cols)" -y "$(tput lines)"
+    tmux split-window -h -t "$SESSION:1" -c "$DIR" -p 25
+    tmux send-keys -t "$SESSION:1.1" "nvim" Enter
+    tmux send-keys -t "$SESSION:1.2" "claude" Enter
+    tmux select-pane -t "$SESSION:1.1"
+    tmux attach-session -t "$SESSION"
+fi

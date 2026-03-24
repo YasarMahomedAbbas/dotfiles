@@ -1,0 +1,23 @@
+#!/bin/bash
+# Cycles vertical split between 75|25, 50|50, 25|75
+# Usage: tmux-cycle-layout left|right
+
+DIRECTION=$1
+WINDOW_WIDTH=$(tmux display-message -p '#{window_width}')
+LEFT_WIDTH=$(tmux list-panes -F '#{pane_left} #{pane_width}' | awk '$1==0 {print $2}')
+LEFT_PANE=$(tmux list-panes -F '#{pane_left} #{pane_index}' | awk '$1==0 {print $2}')
+RATIO=$(( LEFT_WIDTH * 100 / WINDOW_WIDTH ))
+
+if [ "$DIRECTION" = "right" ]; then
+    # Cycle right: 25|75 → 50|50 → 75|25, stop at 75
+    if [ "$RATIO" -lt 40 ]; then T=50
+    elif [ "$RATIO" -lt 60 ]; then T=75
+    else T=75; fi
+else
+    # Cycle left: 75|25 → 50|50 → 25|75, stop at 25
+    if [ "$RATIO" -gt 60 ]; then T=50
+    elif [ "$RATIO" -gt 40 ]; then T=25
+    else T=25; fi
+fi
+
+tmux resize-pane -t "$LEFT_PANE" -x "${T}%"
