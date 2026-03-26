@@ -1,6 +1,11 @@
 gui:
   showFileTree: false
-
 git:
   pagers:
     - pager: delta --side-by-side --dark --paging=never
+customCommands:
+  - key: "t"
+    context: "worktrees"
+    description: "Open tmux session for worktree"
+    command: "wt-session {{.SelectedWorktree.Path}}"
+    output: terminal

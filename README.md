@@ -12,6 +12,7 @@ dotfiles/
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/
   git/        → ~/.gitconfig
+  fish/       → ~/.config/fish/
   lazygit/    → ~/.config/lazygit/
   nvim/       → ~/.config/nvim/
   starship/   → ~/.config/starship.toml
@@ -26,6 +27,7 @@ stow bin
 stow gh-dash
 stow ghostty
 stow git
+stow fish
 stow lazygit
 stow nvim
 stow starship
