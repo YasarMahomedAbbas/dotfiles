@@ -1,0 +1,28 @@
+#!/bin/bash
+# Compact wofi power menu — a small centered window that matches the launcher theme.
+# Bound to SUPER+M / SUPER+Escape in hyprland.conf.
+
+options="\
+  Lock
+  Suspend
+  Logout
+  Reboot
+  Shutdown"
+
+chosen=$(printf '%s\n' "$options" | wofi --dmenu \
+    --prompt "Power" \
+    --conf /dev/null \
+    --style "$HOME/.config/wofi/power.css" \
+    --width 240 --height 296 \
+    --lines 5 \
+    --hide-scroll \
+    --insensitive \
+    --cache-file /dev/null)
+
+case "$chosen" in
+    *Lock)     loginctl lock-session ;;
+    *Suspend)  systemctl suspend ;;
+    *Logout)   hyprctl dispatch exit ;;
+    *Reboot)   systemctl reboot ;;
+    *Shutdown) systemctl poweroff ;;
+esac

@@ -2,42 +2,53 @@
 
 Personal dotfiles managed with [GNU Stow](https://www.gnu.org/software/stow/).
 
+Unified on the **Nord** color palette across every tool.
+
 ## Structure
 
-Each directory is a stow package mirroring the home directory structure:
+Each directory is a stow package mirroring the home directory structure. `.stowrc`
+pins the stow target to `$HOME`, so plain `stow <pkg>` works regardless of where the
+repo is cloned.
+
+**Universal** (both the Hyprland and the GNOME/Ubuntu machine):
 
 ```
 dotfiles/
   bin/        → ~/.local/bin/          (shell scripts: work, tmux-cycle-layout)
   gh-dash/    → ~/.config/gh-dash/
-  ghostty/    → ~/.config/ghostty/
+  ghostty/    → ~/.config/ghostty/     (theme = Nord)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/
   lazygit/    → ~/.config/lazygit/
-  nvim/       → ~/.config/nvim/
+  nvim/       → ~/.config/nvim/        (gbprod/nord.nvim)
   starship/   → ~/.config/starship.toml
   tmux/       → ~/.tmux.conf, ~/.tmux/
 ```
 
-## Install
-Clone the repo, 
+**Hyprland-only** (the Wayland desktop; GNOME does not use these):
 
-```bash
-stow bin
-stow gh-dash
-stow ghostty
-stow git
-stow fish
-stow lazygit
-stow nvim
-stow starship
-stow tmux
+```
+  hypr/       → ~/.config/hypr/        (hyprland, hyprlock, hypridle, hyprpaper, colors.conf, wallpapers/)
+  waybar/     → ~/.config/waybar/
+  mako/       → ~/.config/mako/
+  wofi/       → ~/.config/wofi/
+  wlogout/    → ~/.config/wlogout/
 ```
 
-Or all at once:
+## Install
+
+Full per-machine guides (clone, stow, every dependency):
+
+- **[Hyprland (Arch / CachyOS)](docs/install-hyprland.md)** — universal stack + Nord Wayland desktop.
+- **[GNOME (Ubuntu)](docs/install-gnome.md)** — universal stack only + GNOME Nord theming.
+
+Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works from anywhere:
 
 ```bash
-stow */
+# universal (both machines)
+stow bin gh-dash ghostty git fish lazygit nvim starship tmux
+# Hyprland desktop only
+stow hypr waybar mako wofi
 ```
 
 ## Usage

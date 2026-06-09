@@ -1,0 +1,46 @@
+# Mako notification daemon — Nord palette
+# Reload with: makoctl reload
+
+font=JetBrainsMono Nerd Font 10
+
+# Position
+anchor=bottom-center
+margin=20
+layer=overlay
+
+# Sizing
+width=380
+height=140
+padding=14
+border-size=2
+border-radius=10
+
+# Behavior
+default-timeout=5000
+ignore-timeout=0
+max-visible=4
+sort=-time
+icons=1
+max-icon-size=48
+markup=1
+actions=1
+
+# Default (normal urgency) — Nord
+background-color=#3b4252
+text-color=#d8dee9
+border-color=#88c0d0
+progress-color=over #434c5e
+
+[urgency=low]
+border-color=#81a1c1
+default-timeout=3000
+
+[urgency=high]
+border-color=#bf616a
+text-color=#eceff4
+default-timeout=0
+border-size=3
+
+[app-name=tmux]
+border-color=#ebcb8b
+default-timeout=4000

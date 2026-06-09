@@ -1,6 +1,6 @@
 return {
   {
-    "Mofiqul/vscode.nvim",
+    "gbprod/nord.nvim",
     lazy = false,
     priority = 1000,
     opts = {
@@ -10,7 +10,7 @@ return {
   {
     "LazyVim/LazyVim",
     opts = {
-      colorscheme = "vscode",
+      colorscheme = "nord",
     },
   },
 }

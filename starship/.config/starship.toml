@@ -29,19 +29,23 @@ $time\
 [ ](fg:color_bg1)\
 $line_break$character"""
 
-palette = 'vscode_dark_modern'
+palette = 'nord'
 
-[palettes.vscode_dark_modern]
-color_fg0 = '#cccccc'
-color_bg1 = '#1f1f1f'
-color_bg3 = '#2d2d2d'
-color_blue = '#094771'
-color_aqua = '#1a6b5e'
-color_green = '#4ec9b0'
-color_orange = '#3e3e3e'
-color_purple = '#c586c0'
-color_red = '#f44747'
-color_yellow = '#264f78'
+# Nord powerline: muted dark (Polar Night) segment backgrounds with light text.
+# The segment slots (orange/yellow/aqua/blue/bg3/bg1) are dark Nord shades; color_fg0
+# is the light on-segment text. green/red/purple stay bright because they are the
+# character-prompt foregrounds drawn on the terminal background.
+[palettes.nord]
+color_fg0 = '#eceff4'
+color_bg1 = '#2e3440'
+color_bg3 = '#2e3440'
+color_blue = '#2e3440'
+color_aqua = '#4c566a'
+color_green = '#a3be8c'
+color_orange = '#3b4252'
+color_purple = '#b48ead'
+color_red = '#bf616a'
+color_yellow = '#434c5e'
 
 [os]
 disabled = false
@@ -152,11 +156,11 @@ format = '[[ $symbol( $version) ](fg:color_fg0 bg:color_blue)]($style)'
 [docker_context]
 symbol = ""
 style = "bg:color_bg3"
-format = '[[ $symbol( $context) ](fg:#83a598 bg:color_bg3)]($style)'
+format = '[[ $symbol( $context) ](fg:color_fg0 bg:color_bg3)]($style)'
 
 [conda]
 style = "bg:color_bg3"
-format = '[[ $symbol( $environment) ](fg:#83a598 bg:color_bg3)]($style)'
+format = '[[ $symbol( $environment) ](fg:color_fg0 bg:color_bg3)]($style)'
 
 [pixi]
 style = "bg:color_bg3"

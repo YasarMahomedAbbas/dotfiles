@@ -1,0 +1,111 @@
+* {
+    font-family: "JetBrainsMono Nerd Font", "Inter", sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    border: none;
+    border-radius: 0;
+    min-height: 0;
+}
+
+window#waybar {
+    background: transparent;
+    color: #d8dee9;
+}
+
+/* Pill containers — subtle vertical gradient + faint frost frame for depth */
+#workspaces,
+#window,
+#clock,
+#cpu,
+#memory,
+#pulseaudio,
+#network,
+#battery,
+#tray {
+    background: linear-gradient(180deg, rgba(59, 66, 82, 0.92), rgba(46, 52, 64, 0.92));
+    border: 1px solid rgba(76, 86, 106, 0.35);
+    border-radius: 14px;
+    padding: 1px 12px;
+    margin: 0 3px;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    transition: background 200ms ease, border-color 200ms ease;
+}
+
+/* Hover: brighten + raise a frost edge */
+#clock:hover,
+#cpu:hover,
+#memory:hover,
+#pulseaudio:hover,
+#network:hover,
+#battery:hover {
+    background: linear-gradient(180deg, rgba(67, 76, 94, 0.96), rgba(59, 66, 82, 0.96));
+    border-color: rgba(136, 192, 208, 0.5);
+}
+
+/* Workspaces */
+#workspaces {
+    padding: 2px 6px;
+}
+
+#workspaces button {
+    color: #4c566a;
+    background: transparent;
+    padding: 0 8px;
+    margin: 0 1px;
+    border-radius: 10px;
+    transition: all 200ms ease;
+}
+
+#workspaces button:hover {
+    color: #eceff4;
+    background: rgba(136, 192, 208, 0.12);
+}
+
+#workspaces button.active {
+    color: #2e3440;
+    background: linear-gradient(135deg, #88c0d0, #81a1c1);
+    padding: 0 14px;
+    box-shadow: 0 0 8px rgba(136, 192, 208, 0.45);   /* frost glow */
+}
+
+#workspaces button.urgent {
+    color: #2e3440;
+    background: #bf616a;
+    box-shadow: 0 0 8px rgba(191, 97, 106, 0.5);
+}
+
+/* Active window title — tinted instead of plain grey */
+#window {
+    color: #81a1c1;
+    font-style: italic;
+}
+
+window#waybar.empty #window {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+}
+
+/* Clock — center highlight with accent underline */
+#clock {
+    color: #8fbcbb;
+    font-weight: 600;
+    border-bottom: 2px solid #8fbcbb;
+}
+
+/* Right side — colored text + a matching accent underline per module */
+#cpu        { color: #b48ead; border-bottom: 2px solid #b48ead; }
+#memory     { color: #5e81ac; border-bottom: 2px solid #5e81ac; }
+#pulseaudio { color: #ebcb8b; border-bottom: 2px solid #ebcb8b; }
+#network    { color: #88c0d0; border-bottom: 2px solid #88c0d0; }
+#battery    { color: #a3be8c; border-bottom: 2px solid #a3be8c; }
+
+#battery.warning  { color: #d08770; border-bottom-color: #d08770; }
+#battery.critical { color: #bf616a; border-bottom-color: #bf616a; }
+#battery.charging { color: #a3be8c; border-bottom-color: #a3be8c; }
+
+#tray > .passive   { -gtk-icon-effect: dim; }
+#tray > .active    { -gtk-icon-effect: none; }
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+}

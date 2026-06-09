@@ -1,0 +1,47 @@
+/* wofi power menu — compact Nord, matched to the launcher (style.css) */
+
+* {
+    font-family: "JetBrainsMono Nerd Font", monospace;
+    font-size: 15px;
+}
+
+window {
+    border: 2px solid #88c0d0;                  /* frost cyan */
+    border-radius: 16px;
+    background-color: rgba(46, 52, 64, 0.96);   /* nord0 */
+    color: #d8dee9;
+}
+
+#input {
+    margin: 12px 12px 6px 12px;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 10px;
+    background-color: #3b4252;                  /* nord1 */
+    color: #eceff4;
+    outline: none;
+}
+
+#inner-box { margin: 6px; }
+#outer-box { margin: 8px; }
+#scroll    { margin: 0px; }
+
+#text {
+    margin: 0px 10px;
+    color: #d8dee9;
+}
+
+#entry {
+    padding: 9px 12px;
+    border-radius: 10px;
+    transition: background 80ms ease;
+}
+
+#entry:selected {
+    background: linear-gradient(135deg, #88c0d0, #81a1c1);  /* frost cyan -> blue */
+}
+
+#entry:selected #text {
+    color: #2e3440;                             /* dark text on bright selection */
+    font-weight: bold;
+}
