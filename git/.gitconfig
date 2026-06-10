@@ -10,12 +10,12 @@
 [delta]
     navigate = true
     syntax-theme = Nord
-    minus-style = syntax "#432d36"
-    minus-emph-style = syntax "#5c3a44"
-    minus-non-emph-style = syntax "#432d36"
-    plus-style = syntax "#2e3d33"
-    plus-emph-style = syntax "#3d5343"
-    plus-non-emph-style = syntax "#2e3d33"
+    minus-style = normal "#5f0000"
+    minus-emph-style = normal bold "#870000"
+    minus-non-emph-style = normal "#5f0000"
+    plus-style = normal "#005f00"
+    plus-emph-style = normal bold "#008700"
+    plus-non-emph-style = normal "#005f00"
     line-numbers-minus-style = "#bf616a"
     line-numbers-plus-style = "#a3be8c"
     line-numbers-zero-style = "#4c566a"
