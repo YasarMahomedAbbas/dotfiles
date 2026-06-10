@@ -1,7 +1,7 @@
 # Install guide — Hyprland (Arch / CachyOS)
 
 Full setup: the universal CLI/editor stack **plus** the Nord-themed Wayland desktop.
-Package names below are for `pacman`; `tmuxifier` is the only AUR package (use `paru`/`yay`).
+Package names below are for `pacman`; `sesh` is the only AUR package (use `paru`/`yay`).
 
 ## 1. Clone + stow
 
@@ -16,8 +16,8 @@ cd ~/projects/personal/dotfiles
 Stow **everything** on this machine (universal + Hyprland-only):
 
 ```bash
-stow bin gh-dash ghostty git fish lazygit nvim starship tmux   # universal
-stow hypr waybar mako wofi                                      # Hyprland desktop
+stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux   # universal
+stow hypr waybar mako wofi                                          # Hyprland desktop
 ```
 
 > If a target already exists as a real file/dir (e.g. a default `~/.config/fish`), remove or
@@ -28,8 +28,8 @@ stow hypr waybar mako wofi                                      # Hyprland deskt
 ```bash
 sudo pacman -S --needed \
   ghostty neovim starship lazygit git-delta diffnav \
-  fish tmux ripgrep fd github-cli ttf-jetbrains-mono-nerd
-paru -S --needed tmuxifier        # AUR (sourced by config.fish if present)
+  fish tmux ripgrep fd fzf zoxide eza yazi github-cli ttf-jetbrains-mono-nerd
+paru -S --needed sesh             # AUR (tmux session manager; picker on <prefix>+s)
 ```
 
 | Tool | Role in this config |
@@ -39,6 +39,11 @@ paru -S --needed tmuxifier        # AUR (sourced by config.fish if present)
 | starship | prompt (Nord palette) |
 | lazygit | git TUI (uses `delta` as pager) |
 | git-delta + diffnav | `git`'s pager/diff stack (see `~/.gitconfig`) |
+| sesh | tmux session manager — Nord picker on `<prefix>+s`, config in `sesh/.config/sesh/sesh.toml` |
+| fzf | fuzzy finder — backs the sesh picker (`sesh-picker`) |
+| zoxide | smarter `cd` + recent-dir source for the sesh picker (`zoxide init fish` in `config.fish`) |
+| eza | tree/file previews in the sesh picker |
+| yazi | file-manager window in `tmux-dev-layout` |
 | github-cli (`gh`) | required by gh-dash |
 | ttf-jetbrains-mono-nerd | glyphs for ghostty/tmux/starship/nvim |
 
@@ -72,7 +77,6 @@ sudo pacman -S --needed \
 ## 4. Post-install
 
 ```bash
-git clone https://github.com/jimeh/tmuxifier ~/.tmuxifier   # if you use `load`/wt sessions
 gh extension install dlvhdr/gh-dash                          # the gh-dash TUI
 nvim "+Lazy! sync" +qa                                       # install nvim plugins
 ```

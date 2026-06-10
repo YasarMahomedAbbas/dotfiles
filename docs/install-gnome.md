@@ -14,7 +14,7 @@ cd ~/projects/personal/dotfiles
 Stow the universal packages **only** — do **not** stow `hypr waybar mako wofi`:
 
 ```bash
-stow bin gh-dash ghostty git fish lazygit nvim starship tmux
+stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux
 ```
 
 > On a fresh Ubuntu box `~/.config/fish` may already exist as a real dir — back it up and
@@ -26,11 +26,12 @@ stow bin gh-dash ghostty git fish lazygit nvim starship tmux
 
 ```bash
 sudo apt install -y \
-  git tmux fish ripgrep fd-find wl-clipboard xclip \
+  git tmux fish ripgrep fd-find fzf wl-clipboard xclip \
   build-essential curl unzip
 ```
 
 (`fd-find`'s binary is `fdfind`; optionally `ln -s $(which fdfind) ~/.local/bin/fd`.)
+(`zoxide` is in apt on Ubuntu 22.10+ — `sudo apt install zoxide`; on older releases see the table below.)
 
 **Not in apt (or too old) — install manually:**
 
@@ -45,7 +46,10 @@ sudo apt install -y \
 | **gh-dash** | `gh extension install dlvhdr/gh-dash` |
 | **ghostty** | not in apt → see ghostty.org/docs/install (snap / community `.deb` / build) |
 | **JetBrainsMono Nerd Font** | download from `ryanoasis/nerd-fonts` releases → unzip into `~/.local/share/fonts/` → `fc-cache -f` ⚠️ apt's `fonts-jetbrains-mono` is the **non-Nerd** build (no icons) |
-| **tmuxifier** | `git clone https://github.com/jimeh/tmuxifier ~/.tmuxifier` (sourced by `config.fish`) |
+| **sesh** | tmux session manager (picker on `<prefix>+s`) → GitHub release (`joshmedeski/sesh`) or `go install github.com/joshmedeski/sesh/v2@latest` |
+| **zoxide** | smarter `cd` + sesh's recent-dir source → apt on 22.10+, else `curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh \| sh` |
+| **eza** | file/tree previews in the sesh picker → `cargo install eza` or GitHub release (`eza-community/eza`) |
+| **yazi** | file-manager window in `tmux-dev-layout` → `cargo install --locked yazi-fm` or GitHub release (`sxyazi/yazi`) |
 | **claude** | claude.com/code — required by the `work` script |
 
 ## 3. Post-install

@@ -14,13 +14,14 @@ repo is cloned.
 
 ```
 dotfiles/
-  bin/        → ~/.local/bin/          (shell scripts: work, tmux-cycle-layout, powermenu)
+  bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-preview, powermenu)
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/     (theme = Nord)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/
   lazygit/    → ~/.config/lazygit/
   nvim/       → ~/.config/nvim/        (gbprod/nord.nvim)
+  sesh/       → ~/.config/sesh/        (tmux session manager; Nord picker on <prefix>+s)
   starship/   → ~/.config/starship.toml
   tmux/       → ~/.tmux.conf, ~/.tmux/
 ```
@@ -45,7 +46,7 @@ Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works 
 
 ```bash
 # universal (both machines)
-stow bin gh-dash ghostty git fish lazygit nvim starship tmux
+stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux
 # Hyprland desktop only
 stow hypr waybar mako wofi
 ```
@@ -62,6 +63,29 @@ work ~/some/path  # uses specified directory
 ```
 
 Works both inside and outside an existing tmux session.
+
+### sesh — session picker (`<prefix>+s`)
+
+Inside tmux, `<prefix>+s` opens a Nord-themed [sesh](https://github.com/joshmedeski/sesh)
+picker in a popup (fuzzy-jump to any running session, configured project, or
+[zoxide](https://github.com/ajeetdsouza/zoxide) directory). Configured projects live in
+`sesh/.config/sesh/sesh.toml`.
+
+Sessions get their windows from **`tmux-dev-layout`** (editor + claude split · git · optional
+dev · files), so there are no per-project layout files to maintain:
+
+```bash
+tmux-dev-layout <project-path> [dev-command]   # run as a session's first-window command
+```
+
+### wt-session
+
+Open or create a tmux dev session for a worktree/directory. Builds the same
+`tmux-dev-layout` windows; works inside or outside tmux:
+
+```bash
+wt-session <path>
+```
 
 ### tmux-cycle-layout
 
