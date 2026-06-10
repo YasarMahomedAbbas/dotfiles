@@ -1,0 +1,43 @@
+#!/bin/bash
+# Build the standard dev layout inside the CURRENT tmux session, then become nvim.
+#
+# Designed to run as a session's first-window command — either sesh's
+# startup_command, or sent into a freshly-created session by `wt-session`.
+#
+# Usage: tmux-dev-layout <project-path> [dev-command]
+#   <project-path>  directory the windows open in (defaults to $PWD)
+#   [dev-command]   optional; if given, adds a "dev" window running it (e.g. "npm run dev")
+#
+# Windows: editor (nvim + claude 75/25 split) · git (lazygit) · [dev] · files (yazi)
+
+set -e
+
+[ -z "${TMUX:-}" ] && { echo "tmux-dev-layout must run inside tmux"; exit 1; }
+
+path="$(realpath "${1:-$PWD}")"
+dev_cmd="${2:-}"
+
+# Window 1 already exists (sesh/new-session made it) — make it the editor.
+tmux rename-window editor
+
+# Right 25% pane for claude
+claude_pane="$(tmux split-window -h -l 25% -c "$path" -P -F '#{pane_id}')"
+tmux send-keys -t "$claude_pane" "claude" Enter
+
+# Git window
+git_win="$(tmux new-window -n git -c "$path" -P -F '#{window_id}')"
+tmux send-keys -t "$git_win" "lazygit" Enter
+
+# Optional dev window
+if [ -n "$dev_cmd" ]; then
+    dev_win="$(tmux new-window -n dev -c "$path" -P -F '#{window_id}')"
+    tmux send-keys -t "$dev_win" "$dev_cmd" Enter
+fi
+
+# Files window
+files_win="$(tmux new-window -n files -c "$path" -P -F '#{window_id}')"
+tmux send-keys -t "$files_win" "yazi" Enter
+
+# Back to the editor window, and turn this pane into nvim
+tmux select-window -t editor
+cd "$path" && exec nvim

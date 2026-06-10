@@ -1,0 +1,47 @@
+#!/bin/bash
+# Preview for the sesh picker (bin/sesh-picker).
+# Arg $1 = the raw fzf line: "<ansi><icon><ansi> <name-or-path>".
+#
+#  - running tmux session  -> its window list + a live capture of the active pane
+#  - a directory           -> a file tree (eza)
+#  - anything else         -> sesh's own preview, on the cleaned name
+
+raw="$1"
+
+# strip ANSI colour codes, then the leading icon glyph + spaces
+name="$(printf '%s' "$raw" \
+  | sed -E 's/\x1b\[[0-9;]*m//g' \
+  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//')"
+
+C_ACCENT='\033[38;2;136;192;208m'   # frost cyan
+C_DIM='\033[38;2;76;86;106m'        # nord3
+C_RESET='\033[0m'
+
+# 1) Running tmux session → window list + active pane
+if tmux has-session -t "=$name" 2>/dev/null; then
+    printf "${C_ACCENT}  %s${C_RESET}\n\n" "$name"
+    # tmux -F can't emit terminal colours, so colour the rows in the shell
+    tmux list-windows -t "=$name" \
+        -F '#{window_index}:#{window_name}:#{window_panes}:#{window_active}:#{window_zoomed_flag}' \
+    | while IFS=: read -r idx wname panes active zoomed; do
+        z=""; [ "$zoomed" = 1 ] && z=" [Z]"
+        if [ "$active" = 1 ]; then
+            printf "  ${C_ACCENT}%s: %s%s *${C_RESET}  ${C_DIM}%sp${C_RESET}\n" "$idx" "$wname" "$z" "$panes"
+        else
+            printf "  ${C_DIM}%s: %s  %sp${C_RESET}\n" "$idx" "$wname" "$panes"
+        fi
+    done
+    printf "\n${C_DIM}  ── active pane ──${C_RESET}\n"
+    active="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"
+    tmux capture-pane -ep -t "=$name:$active" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | head -30
+    exit 0
+fi
+
+# 2) A real directory → file tree
+if [ -d "$name" ]; then
+    eza --tree --level=2 --icons --color=always --group-directories-first "$name" 2>/dev/null | head -60
+    exit 0
+fi
+
+# 3) Fall back to sesh's own preview, with the cleaned name
+sesh preview "$name" 2>/dev/null

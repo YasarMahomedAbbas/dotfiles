@@ -1,0 +1,26 @@
+# sesh — smart tmux session manager / switcher.
+# Picker is bound to <prefix>+s in ~/.tmux.conf. Pairs with zoxide for recent dirs.
+# Layouts are built by ~/.local/bin/tmux-dev-layout (shared with `wt-session`),
+# so there are no per-project/per-worktree layout files to maintain.
+
+[default_session]
+# Any dir/worktree picked that has no explicit entry below gets the standard layout.
+startup_command = "tmux-dev-layout {}"
+preview_command = "eza --all --icons --color=always {}"
+
+[[session]]
+name = "dotfiles"
+path = "~/projects/personal/dotfiles"
+startup_command = "tmux-dev-layout {}"
+
+[[session]]
+name = "prepahead"
+path = "~/projects/personal/prepahead"
+startup_command = "tmux-dev-layout {} 'npm run dev'"
+
+[[session]]
+name = "travelsmart"
+# NOTE: simplified vs the old tmuxifier layout — opens in Frontend with a dev window.
+# The old layout also had a backend split; add it back here if you miss it.
+path = "~/projects/org/whitewolfstudios/travel-smart/Frontend"
+startup_command = "tmux-dev-layout {} 'npm run dev'"

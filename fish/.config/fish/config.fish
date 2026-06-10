@@ -20,6 +20,11 @@ if test -d "$HOME/.opencode/bin"
     fish_add_path "$HOME/.opencode/bin"
 end
 
+# zoxide — smarter cd (only if installed)
+if type -q zoxide
+    zoxide init fish | source
+end
+
 # fzf — Nord color scheme
 set -gx FZF_DEFAULT_OPTS "
 --color=bg+:#3b4252,bg:#2e3440,spinner:#81a1c1,hl:#616e88

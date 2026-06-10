@@ -1,0 +1,28 @@
+#!/bin/bash
+# Nord-themed sesh picker — launched from tmux (prefix+s) inside a display-popup.
+# Colors are passed explicitly so it doesn't depend on FZF_DEFAULT_OPTS (which the
+# popup's /bin/sh shell never sees).
+
+# Nerd-font bits, generated via printf with explicit codepoints (plain-ASCII source)
+prompt="$(printf '   ')"     # U+F002 magnifier
+pointer="$(printf '')"        # U+F0DA caret
+label="$(printf '  sesh ')"   # U+F120 terminal
+
+selected="$(
+  sesh list --icons --hide-duplicates | fzf \
+    --ansi --no-sort --reverse --height 100% \
+    --border=rounded --border-label "$label" \
+    --prompt "$prompt" --pointer "$pointer" \
+    --color='bg+:#3b4252,bg:#2e3440,fg:#d8dee9,fg+:#eceff4,hl:#88c0d0,hl+:#88c0d0,border:#88c0d0,label:#88c0d0,gutter:#2e3440,prompt:#81a1c1,pointer:#b48ead,marker:#a3be8c,info:#4c566a,header:#616e88,spinner:#81a1c1' \
+    --header 'ctrl-a all | ctrl-t tmux | ctrl-c config | ctrl-x zoxide' \
+    --bind 'tab:down,btab:up' \
+    --bind 'ctrl-a:reload(sesh list --icons --hide-duplicates)' \
+    --bind 'ctrl-t:reload(sesh list -t --icons)' \
+    --bind 'ctrl-c:reload(sesh list -c --icons)' \
+    --bind 'ctrl-x:reload(sesh list -z --icons)' \
+    --preview 'sesh-preview {}' \
+    --preview-window 'right:55%,border-left'
+)" || exit 0
+
+[ -z "$selected" ] && exit 0
+exec sesh connect "$selected"
