@@ -19,3 +19,10 @@ end
 if test -d "$HOME/.opencode/bin"
     fish_add_path "$HOME/.opencode/bin"
 end
+
+# fzf — Nord color scheme
+set -gx FZF_DEFAULT_OPTS "
+--color=bg+:#3b4252,bg:#2e3440,spinner:#81a1c1,hl:#616e88
+--color=fg:#d8dee9,header:#616e88,info:#81a1c1,pointer:#81a1c1
+--color=marker:#a3be8c,fg+:#eceff4,prompt:#81a1c1,hl+:#88c0d0
+--color=border:#434c5e"

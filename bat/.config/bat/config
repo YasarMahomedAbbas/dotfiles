@@ -1,0 +1,3 @@
+# bat — uses the built-in Nord theme (also drives fzf previews, git syntax, MANPAGER)
+--theme="Nord"
+--style="numbers,changes,header"

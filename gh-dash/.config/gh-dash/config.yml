@@ -79,6 +79,21 @@ defaults:
 keybindings: {}
 repoPaths: {}
 theme:
+    colors:
+        text:
+            primary: "#eceff4"
+            secondary: "#88c0d0"
+            inverted: "#2e3440"
+            faint: "#4c566a"
+            warning: "#ebcb8b"
+            success: "#a3be8c"
+            error: "#bf616a"
+        background:
+            selected: "#3b4252"
+        border:
+            primary: "#88c0d0"
+            secondary: "#434c5e"
+            faint: "#3b4252"
     ui:
         sectionsShowCount: true
         table:

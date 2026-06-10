@@ -1,0 +1,108 @@
+# Nord theme for Yazi — matched to the rest of the rice (waybar/tmux frost-cyan accent).
+#
+# Palette: bg #2E3440 / #3B4252 / #434C5E · fg #D8DEE9 / #ECEFF4 · muted #4C566A
+#   frost #8FBCBB #88C0D0 #81A1C1 #5E81AC · aurora #BF616A #D08770 #EBCB8B #A3BE8C #B48EAD
+
+# : Manager (the file list) {{{
+
+[mgr]
+cwd = { fg = "#88c0d0" }
+
+# hovered row + preview
+hovered         = { fg = "#eceff4", bg = "#434c5e" }
+preview_hovered = { underline = true }
+
+# find
+find_keyword  = { fg = "#ebcb8b", italic = true }
+find_position = { fg = "#b48ead", bg = "reset", italic = true }
+
+# selection / yank markers
+marker_copied   = { fg = "#a3be8c", bg = "#a3be8c" }
+marker_cut      = { fg = "#bf616a", bg = "#bf616a" }
+marker_marked   = { fg = "#88c0d0", bg = "#88c0d0" }
+marker_selected = { fg = "#ebcb8b", bg = "#ebcb8b" }
+
+# tabs
+tab_active   = { fg = "#2e3440", bg = "#88c0d0" }
+tab_inactive = { fg = "#d8dee9", bg = "#3b4252" }
+tab_width    = 1
+
+# borders
+border_symbol = "│"
+border_style  = { fg = "#4c566a" }
+
+# : }}}
+
+# : Mode chips {{{
+
+[mode]
+normal_main = { fg = "#2e3440", bg = "#88c0d0", bold = true }
+normal_alt  = { fg = "#88c0d0", bg = "#3b4252" }
+select_main = { fg = "#2e3440", bg = "#a3be8c", bold = true }
+select_alt  = { fg = "#a3be8c", bg = "#3b4252" }
+unset_main  = { fg = "#2e3440", bg = "#b48ead", bold = true }
+unset_alt   = { fg = "#b48ead", bg = "#3b4252" }
+
+# : }}}
+
+# : Status bar {{{
+
+[status]
+sep_left  = { open = "", close = "" }
+sep_right = { open = "", close = "" }
+
+perm_sep   = { fg = "#4c566a" }
+perm_type  = { fg = "#81a1c1" }
+perm_read  = { fg = "#ebcb8b" }
+perm_write = { fg = "#bf616a" }
+perm_exec  = { fg = "#a3be8c" }
+
+progress_label  = { fg = "#eceff4", bold = true }
+progress_normal = { fg = "#88c0d0", bg = "#2e3440" }
+progress_error  = { fg = "#bf616a", bg = "#2e3440" }
+
+# : }}}
+
+# : Pick / input / completion / tasks / which / help / notify {{{
+
+[pick]
+border   = { fg = "#88c0d0" }
+active   = { fg = "#b48ead", bold = true }
+inactive = {}
+
+[input]
+border   = { fg = "#88c0d0" }
+title    = {}
+value    = {}
+selected = { reversed = true }
+
+[cmp]
+border   = { fg = "#88c0d0" }
+active   = { fg = "#88c0d0", reversed = true }
+inactive = {}
+
+[tasks]
+border  = { fg = "#88c0d0" }
+title   = {}
+hovered = { fg = "#eceff4", bg = "#434c5e" }
+
+[which]
+mask            = { bg = "#3b4252" }
+cand            = { fg = "#88c0d0" }
+rest            = { fg = "#4c566a" }
+desc            = { fg = "#d8dee9" }
+separator       = "  "
+separator_style = { fg = "#4c566a" }
+
+[help]
+on      = { fg = "#88c0d0" }
+run     = { fg = "#b48ead" }
+hovered = { fg = "#eceff4", bg = "#434c5e", bold = true }
+footer  = { fg = "#2e3440", bg = "#d8dee9" }
+
+[notify]
+title_info  = { fg = "#a3be8c" }
+title_warn  = { fg = "#ebcb8b" }
+title_error = { fg = "#bf616a" }
+
+# : }}}

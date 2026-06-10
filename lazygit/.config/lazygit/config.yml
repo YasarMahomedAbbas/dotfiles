@@ -1,5 +1,30 @@
 gui:
   showFileTree: false
+  nerdFontsVersion: "3"
+  theme:
+    activeBorderColor:
+      - "#88c0d0"
+      - bold
+    inactiveBorderColor:
+      - "#4c566a"
+    searchingActiveBorderColor:
+      - "#ebcb8b"
+    optionsTextColor:
+      - "#81a1c1"
+    selectedLineBgColor:
+      - "#434c5e"
+    cherryPickedCommitBgColor:
+      - "#434c5e"
+    cherryPickedCommitFgColor:
+      - "#88c0d0"
+    markedBaseCommitBgColor:
+      - "#434c5e"
+    markedBaseCommitFgColor:
+      - "#ebcb8b"
+    unstagedChangesColor:
+      - "#bf616a"
+    defaultFgColor:
+      - "#d8dee9"
 git:
   pagers:
     - pager: delta --side-by-side --dark --paging=never

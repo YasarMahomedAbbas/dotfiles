@@ -9,25 +9,25 @@
 
 [delta]
     navigate = true
-    syntax-theme = base16
-    minus-style = syntax "#3d1117"
-    minus-emph-style = syntax "#6e3630"
-    plus-style = syntax "#1b3a2a"
-	plus-emph-style = "syntax #2a6233"
-    line-numbers-minus-style = "#da3633"
-    line-numbers-plus-style = "#3fb950"
-    line-numbers-zero-style = "#484f58"
+    syntax-theme = Nord
+    minus-style = syntax "#432d36"
+    minus-emph-style = syntax "#5c3a44"
+    minus-non-emph-style = syntax "#432d36"
+    plus-style = syntax "#2e3d33"
+    plus-emph-style = syntax "#3d5343"
+    plus-non-emph-style = syntax "#2e3d33"
+    line-numbers-minus-style = "#bf616a"
+    line-numbers-plus-style = "#a3be8c"
+    line-numbers-zero-style = "#4c566a"
     hunk-header-style = file line-number syntax
-    hunk-header-decoration-style = "#3b434b" box
-    file-style = bold "#e6edf3"
-    file-decoration-style = none
-    minus-non-emph-style = syntax "#3d1117"
-	plus-non-emph-style = "syntax #1b2d1f"
-    whitespace-error-style = "#f85149" reverse
+    hunk-header-decoration-style = "#434c5e" box
+    file-style = bold "#88c0d0"
+    file-decoration-style = "#434c5e" ul
+    whitespace-error-style = "#bf616a" reverse
     dark = true
-	line-numbers = true
-	line-fill-method = spaces
-	side-by-side = true
+    line-numbers = true
+    line-fill-method = spaces
+    side-by-side = true
 
 [alias]
     dd = diff develop
