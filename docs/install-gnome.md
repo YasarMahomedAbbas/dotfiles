@@ -11,7 +11,7 @@ git clone <repo-url> ~/projects/personal/dotfiles
 cd ~/projects/personal/dotfiles
 ```
 
-Stow the universal packages **only** — do **not** stow `hypr waybar mako wofi wlogout`:
+Stow the universal packages **only** — do **not** stow `hypr waybar mako wofi`:
 
 ```bash
 stow bin gh-dash ghostty git fish lazygit nvim starship tmux

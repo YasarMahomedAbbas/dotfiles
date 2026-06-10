@@ -14,7 +14,7 @@ repo is cloned.
 
 ```
 dotfiles/
-  bin/        → ~/.local/bin/          (shell scripts: work, tmux-cycle-layout)
+  bin/        → ~/.local/bin/          (shell scripts: work, tmux-cycle-layout, powermenu)
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/     (theme = Nord)
   git/        → ~/.gitconfig
@@ -31,8 +31,7 @@ dotfiles/
   hypr/       → ~/.config/hypr/        (hyprland, hyprlock, hypridle, hyprpaper, colors.conf, wallpapers/)
   waybar/     → ~/.config/waybar/
   mako/       → ~/.config/mako/
-  wofi/       → ~/.config/wofi/
-  wlogout/    → ~/.config/wlogout/
+  wofi/       → ~/.config/wofi/      (launcher + powermenu styles)
 ```
 
 ## Install
