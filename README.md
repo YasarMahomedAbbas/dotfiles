@@ -35,12 +35,18 @@ dotfiles/
   wofi/       → ~/.config/wofi/      (launcher + powermenu styles)
 ```
 
+**GNOME-only** (not a stow package — scripts/config applied directly):
+
+```
+  gnome/      → apply-keybinds.sh     (Tiling Shell + Hyprland-like binds; see docs/install-gnome.md)
+```
+
 ## Install
 
 Full per-machine guides (clone, stow, every dependency):
 
 - **[Hyprland (Arch / CachyOS)](docs/install-hyprland.md)** — universal stack + Nord Wayland desktop.
-- **[GNOME (Ubuntu)](docs/install-gnome.md)** — universal stack only + GNOME Nord theming.
+- **[GNOME (Ubuntu)](docs/install-gnome.md)** — universal stack + Hyprland-like tiling (Tiling Shell) & Nord theming.
 
 Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works from anywhere:
 

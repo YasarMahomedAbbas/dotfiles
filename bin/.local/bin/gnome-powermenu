@@ -1,0 +1,19 @@
+#!/bin/bash
+# GNOME power menu — zenity equivalent of the wofi `powermenu` used on Hyprland.
+# GNOME provides no wofi, so this uses zenity and gnome-session-quit for logout.
+# Bound to SUPER+M in the GNOME dconf keybinds (see docs/install-gnome.md).
+
+chosen=$(zenity --list \
+    --title="Power" \
+    --column="Action" \
+    --hide-header \
+    --width=240 --height=320 \
+    "Lock" "Suspend" "Logout" "Reboot" "Shutdown" 2>/dev/null)
+
+case "$chosen" in
+    Lock)     loginctl lock-session ;;
+    Suspend)  systemctl suspend ;;
+    Logout)   gnome-session-quit --logout --no-prompt ;;
+    Reboot)   systemctl reboot ;;
+    Shutdown) systemctl poweroff ;;
+esac
