@@ -1,0 +1,85 @@
+#!/bin/bash
+# theme-switch — render every app's colors from a single palette and reload.
+#
+#   theme-switch              # list available themes (active one marked)
+#   theme-switch dark-nord    # switch to that theme
+#
+# Palettes live in   <dotfiles>/themes/palettes/<name>.env
+# Templates live in  <dotfiles>/themes/templates/*.tmpl
+# Rendered output goes to ~/.config/theme/ (NOT stowed — kept out of git so
+# switching themes never dirties the repo). Each app's static config includes
+# the matching file from there.
+set -euo pipefail
+
+DOTFILES="${DOTFILES:-$HOME/projects/personal/dotfiles}"
+PALETTES="$DOTFILES/themes/palettes"
+TEMPLATES="$DOTFILES/themes/templates"
+OUT="$HOME/.config/theme"
+
+# Every role variable a template may reference. envsubst is given this explicit
+# allow-list so that unrelated $names in templates (e.g. starship's $directory)
+# are left untouched.
+VARS='$theme_name $bg0 $bg1 $bg2 $bg3 $fg0 $fg1 $fg2 $accent $accent2 $blue $teal $red $orange $yellow $green $purple $muted $dim $opacity $blur $ansi0 $ansi1 $ansi2 $ansi3 $ansi4 $ansi5 $ansi6 $ansi7 $ansi8 $ansi9 $ansi10 $ansi11 $ansi12 $ansi13 $ansi14 $ansi15'
+
+list_themes() {
+  local active=""
+  [ -f "$OUT/active" ] && active="$(cat "$OUT/active")"
+  echo "Available themes:"
+  for f in "$PALETTES"/*.env; do
+    local name; name="$(basename "$f" .env)"
+    if [ "$name" = "$active" ]; then echo "  * $name (active)"; else echo "    $name"; fi
+  done
+}
+
+theme="${1:-}"
+if [ -z "$theme" ]; then list_themes; exit 0; fi
+
+pfile="$PALETTES/$theme.env"
+if [ ! -f "$pfile" ]; then
+  echo "Unknown theme: $theme" >&2
+  list_themes >&2
+  exit 1
+fi
+
+mkdir -p "$OUT"
+
+# Load the palette into the environment so envsubst can see the roles.
+set -a
+# shellcheck disable=SC1090
+source "$pfile"
+set +a
+
+render() { envsubst "$VARS" < "$TEMPLATES/$1" > "$OUT/$2"; }
+
+render ghostty.conf.tmpl         ghostty.conf
+render hypr-colors.conf.tmpl     hypr-colors.conf
+render gtk-colors.css.tmpl       gtk-colors.css
+render mako.conf.tmpl            mako.conf
+render tmux.conf.tmpl            tmux.conf
+render hyprlock-colors.conf.tmpl hyprlock-colors.conf
+render starship.toml.tmpl        starship.toml
+render fzf.fish.tmpl             fzf.fish
+
+echo "$theme" > "$OUT/active"
+echo "→ rendered '$theme' into $OUT"
+
+# ---- live reloads (best-effort; missing tools are skipped) -----------------
+reloaded=()
+if command -v makoctl >/dev/null && pgrep -x mako >/dev/null 2>&1; then
+  makoctl reload && reloaded+=(mako)
+fi
+if command -v hyprctl >/dev/null && pgrep -x Hyprland >/dev/null 2>&1; then
+  hyprctl reload >/dev/null && reloaded+=(hyprland)
+fi
+if pgrep -x waybar >/dev/null 2>&1; then
+  killall -SIGUSR2 waybar 2>/dev/null && reloaded+=(waybar)
+fi
+if command -v tmux >/dev/null && tmux info >/dev/null 2>&1; then
+  tmux source-file "$HOME/.tmux.conf" >/dev/null 2>&1 && reloaded+=(tmux)
+fi
+
+if [ ${#reloaded[@]} -gt 0 ]; then
+  echo "→ reloaded live: ${reloaded[*]}"
+fi
+echo "→ ghostty/fish/starship/nvim: applied on next window/shell launch"
+echo "  (ghostty: ctrl+shift+, to reload now)"

@@ -16,7 +16,7 @@ repo is cloned.
 dotfiles/
   bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-preview, powermenu)
   gh-dash/    → ~/.config/gh-dash/
-  ghostty/    → ~/.config/ghostty/     (theme = Nord)
+  ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/
   lazygit/    → ~/.config/lazygit/
@@ -24,6 +24,7 @@ dotfiles/
   sesh/       → ~/.config/sesh/        (tmux session manager; Nord picker on <prefix>+s)
   starship/   → ~/.config/starship.toml
   tmux/       → ~/.tmux.conf, ~/.tmux/
+  themes/     → (not stowed) color palettes + templates for `theme-switch`; see Theming
 ```
 
 **Hyprland-only** (the Wayland desktop; GNOME does not use these):
@@ -58,6 +59,17 @@ stow hypr waybar mako wofi
 ```
 
 ## Usage
+
+### theme-switch — color presets
+
+One palette drives every app. Switch the whole desktop at once:
+
+```bash
+theme-switch              # list themes (active marked)
+theme-switch dark-nord    # nord · dark-nord · vscode-dark
+```
+
+Full details in **[docs/theming.md](docs/theming.md)**.
 
 ### work
 

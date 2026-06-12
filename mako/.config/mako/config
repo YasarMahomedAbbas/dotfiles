@@ -1,5 +1,8 @@
-# Mako notification daemon — Nord palette
+# Mako notification daemon
 # Reload with: makoctl reload
+# Colors are theme-driven: `theme-switch` generates ~/.config/theme/mako.conf
+# and the include below pulls them in (criteria sections merge by selector, so
+# the timeouts/sizing here stay while the colors come from the theme).
 
 font=JetBrainsMono Nerd Font 10
 
@@ -25,22 +28,15 @@ max-icon-size=48
 markup=1
 actions=1
 
-# Default (normal urgency) — Nord
-background-color=#3b4252
-text-color=#d8dee9
-border-color=#88c0d0
-progress-color=over #434c5e
+# Theme colors (background/text/border/progress + per-urgency accents)
+include=/home/dracul/.config/theme/mako.conf
 
 [urgency=low]
-border-color=#81a1c1
 default-timeout=3000
 
 [urgency=high]
-border-color=#bf616a
-text-color=#eceff4
 default-timeout=0
 border-size=3
 
 [app-name=tmux]
-border-color=#ebcb8b
 default-timeout=4000
