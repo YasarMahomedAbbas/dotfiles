@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Io
-import "Colors.js" as C
 
 Item {
     implicitWidth: visible ? row.implicitWidth : 0
@@ -33,10 +32,10 @@ Item {
     }
 
     readonly property color batColor: {
-        if (status === "Charging")          return C.green
-        if (capacity <= 15)                 return C.red
-        if (capacity <= 30)                 return C.orange
-        return C.green
+        if (status === "Charging")          return Colors.green
+        if (capacity <= 15)                 return Colors.red
+        if (capacity <= 30)                 return Colors.orange
+        return Colors.green
     }
 
     readonly property string batIcon: {
@@ -66,7 +65,7 @@ Item {
             font.pixelSize: 12
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.Medium
-            color: C.fg1
+            color: Colors.fg1
         }
     }
 }

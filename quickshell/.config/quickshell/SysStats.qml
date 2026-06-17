@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Io
-import "Colors.js" as C
 
 Item {
     implicitWidth: row.implicitWidth
@@ -58,14 +57,14 @@ Item {
                 text: "󰻠"
                 font.pixelSize: 14
                 font.family: "JetBrainsMono Nerd Font"
-                color: cpuPct >= 85 ? C.red : C.purple
+                color: cpuPct >= 85 ? Colors.red : Colors.purple
             }
             Text {
                 text: cpuPct + "%"
                 font.pixelSize: 12
                 font.family: "JetBrainsMono Nerd Font"
                 font.weight: Font.Medium
-                color: C.fg1
+                color: Colors.fg1
             }
         }
 
@@ -76,14 +75,14 @@ Item {
                 text: "󰍛"
                 font.pixelSize: 14
                 font.family: "JetBrainsMono Nerd Font"
-                color: memPct >= 85 ? C.red : C.accent2
+                color: memPct >= 85 ? Colors.red : Colors.accent2
             }
             Text {
                 text: memPct + "%"
                 font.pixelSize: 12
                 font.family: "JetBrainsMono Nerd Font"
                 font.weight: Font.Medium
-                color: C.fg1
+                color: Colors.fg1
             }
         }
     }

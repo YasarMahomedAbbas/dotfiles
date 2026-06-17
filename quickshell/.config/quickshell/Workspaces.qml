@@ -3,7 +3,6 @@ import QtQuick.Layouts
 import QtQuick.Effects
 import Quickshell
 import Quickshell.Hyprland
-import "Colors.js" as C
 
 Item {
     implicitWidth: row.implicitWidth
@@ -52,7 +51,7 @@ Item {
                     anchors.centerIn: dot
                     width: dot.width; height: dot.height
                     radius: dot.radius
-                    color: isUrgent ? C.red : C.accent
+                    color: isUrgent ? Colors.red : Colors.accent
                     visible: isActive
                     opacity: 0.55
                     layer.enabled: isActive
@@ -70,8 +69,8 @@ Item {
                     width: isActive ? 22 : 9
                     height: 9
                     radius: 4.5
-                    color: isUrgent ? C.red
-                         : isActive ? C.accent
+                    color: isUrgent ? Colors.red
+                         : isActive ? Colors.accent
                          : isLive   ? Qt.rgba(0xd8/255, 0xde/255, 0xe9/255, 0.55)
                          :            Qt.rgba(0x4c/255, 0x56/255, 0x6a/255, 0.55)
 

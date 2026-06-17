@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Io
-import "Colors.js" as C
 
 // The five power actions as circular accent buttons. Lays out horizontally
 // (icon over label) by default, or vertically (icon beside label) when
@@ -13,11 +12,11 @@ Item {
     signal requestClose()
 
     readonly property var actions: [
-        { icon: "󰌾", label: "Lock",     accent: C.blue,   cmd: ["loginctl", "lock-session"] },
-        { icon: "󰤄", label: "Suspend",  accent: C.teal,   cmd: ["systemctl", "suspend"] },
-        { icon: "󰍃", label: "Logout",   accent: C.yellow, cmd: ["hyprctl", "dispatch", "exit"] },
-        { icon: "󰜉", label: "Reboot",   accent: C.orange, cmd: ["systemctl", "reboot"] },
-        { icon: "󰐥", label: "Shutdown", accent: C.red,    cmd: ["systemctl", "poweroff"] },
+        { icon: "󰌾", label: "Lock",     accent: Colors.blue,   cmd: ["loginctl", "lock-session"] },
+        { icon: "󰤄", label: "Suspend",  accent: Colors.teal,   cmd: ["systemctl", "suspend"] },
+        { icon: "󰍃", label: "Logout",   accent: Colors.yellow, cmd: ["hyprctl", "dispatch", "exit"] },
+        { icon: "󰜉", label: "Reboot",   accent: Colors.orange, cmd: ["systemctl", "reboot"] },
+        { icon: "󰐥", label: "Shutdown", accent: Colors.red,    cmd: ["systemctl", "poweroff"] },
     ]
 
     implicitWidth: grid.implicitWidth
@@ -60,7 +59,7 @@ Item {
                         text: modelData.icon
                         font.pixelSize: 18
                         font.family: "JetBrainsMono Nerd Font"
-                        color: btnHover.containsMouse ? modelData.accent : C.fg1
+                        color: btnHover.containsMouse ? modelData.accent : Colors.fg1
                         Behavior on color { ColorAnimation { duration: 130 } }
                     }
 
@@ -85,7 +84,7 @@ Item {
                     font.pixelSize: root.vertical ? 11 : 9
                     font.weight: Font.Medium
                     font.family: "JetBrainsMono Nerd Font"
-                    color: btnHover.containsMouse ? C.fg0 : C.muted
+                    color: btnHover.containsMouse ? Colors.fg0 : Colors.muted
                     Behavior on color { ColorAnimation { duration: 130 } }
                 }
             }

@@ -1,6 +1,5 @@
 import QtQuick
 import Quickshell.Hyprland
-import "Colors.js" as C
 
 Item {
     implicitWidth: titleText.implicitWidth
@@ -18,6 +17,6 @@ Item {
         font.family: "JetBrainsMono Nerd Font"
         font.italic: true
         font.weight: Font.Medium
-        color: C.fg2
+        color: Colors.fg2
     }
 }

@@ -1,5 +1,4 @@
 import QtQuick
-import "Colors.js" as C
 
 Item {
     implicitWidth: lbl.implicitWidth
@@ -13,7 +12,7 @@ Item {
         text: "󰐥"
         font.pixelSize: 15
         font.family: "JetBrainsMono Nerd Font"
-        color: hover.containsMouse ? C.red : C.fg2
+        color: hover.containsMouse ? Colors.red : Colors.fg2
         Behavior on color { ColorAnimation { duration: 150 } }
         scale: hover.containsMouse ? 1.15 : 1.0
         Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }

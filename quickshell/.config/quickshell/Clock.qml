@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
-import "Colors.js" as C
 
 Item {
     implicitWidth: row.implicitWidth
@@ -23,26 +22,26 @@ Item {
             text: "󰥔"
             font.pixelSize: 14
             font.family: "JetBrainsMono Nerd Font"
-            color: C.teal
+            color: Colors.teal
         }
         Text {
             text: Qt.formatDateTime(clock.date, "HH:mm")
             font.pixelSize: 13
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.DemiBold
-            color: C.fg0
+            color: Colors.fg0
         }
         Rectangle {
             Layout.alignment: Qt.AlignVCenter
             width: 3; height: 3; radius: 1.5
-            color: C.muted
+            color: Colors.muted
         }
         Text {
             text: Qt.formatDateTime(clock.date, "ddd dd MMM")
             font.pixelSize: 12
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.Medium
-            color: C.fg1
+            color: Colors.fg1
         }
     }
 

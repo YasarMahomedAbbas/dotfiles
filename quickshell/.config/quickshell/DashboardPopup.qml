@@ -3,7 +3,6 @@ import QtQuick.Layouts
 import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
-import "Colors.js" as C
 
 Item {
     id: root
@@ -22,6 +21,7 @@ Item {
         viewMonth = clock.date.getMonth()
         proc.running = true
         todoProc.running = true
+        themesProc.running = true
     }
 
     readonly property var monthNames: [
@@ -114,6 +114,40 @@ Item {
         }
     }
 
+    // ── Theme switcher ───────────────────────────────────────────────
+    property var    themes:      []
+    property string activeTheme: ""
+
+    function applyTheme(name) {
+        // pass the name as $1 so it's never word-split or shell-interpreted
+        switchProc.command = ["bash", "-lc", "theme-switch \"$1\"", "theme-switch", name]
+        switchProc.running = true
+        activeTheme = name   // optimistic; the watched marker confirms it
+    }
+
+    Process {
+        id: themesProc
+        command: ["bash", "-lc", "theme-switch --names"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                themes = text.trim().split("\n").filter(function (s) { return s.length })
+            }
+        }
+    }
+
+    Process { id: switchProc }
+
+    // The active theme marker, watched so the highlight stays correct even when
+    // the theme is changed from a terminal.
+    FileView {
+        id: activeFile
+        path: Quickshell.env("HOME") + "/.config/theme/active"
+        watchChanges: true
+        onFileChanged: reload()
+        onLoaded: root.activeTheme = text().trim()
+        Component.onCompleted: root.activeTheme = text().trim()
+    }
+
     // Opens Obsidian straight to the dashboard note.
     Process {
         id: openProc
@@ -166,13 +200,13 @@ Item {
                         text: greeting
                         font.pixelSize: 16; font.weight: Font.DemiBold
                         font.family: "JetBrainsMono Nerd Font"
-                        color: C.accent
+                        color: Colors.accent
                     }
                     Text {
                         text: Qt.formatDateTime(clock.date, "dddd, dd MMMM yyyy")
                         font.pixelSize: 11
                         font.family: "JetBrainsMono Nerd Font"
-                        color: C.fg1
+                        color: Colors.fg1
                     }
                 }
 
@@ -182,7 +216,7 @@ Item {
                     text: Qt.formatDateTime(clock.date, "HH:mm")
                     font.pixelSize: 34; font.weight: Font.Bold
                     font.family: "JetBrainsMono Nerd Font"
-                    color: C.fg0
+                    color: Colors.fg0
                 }
             }
 
@@ -209,7 +243,7 @@ Item {
                             text: currentIcon
                             font.pixelSize: 52
                             font.family: "JetBrainsMono Nerd Font"
-                            color: C.teal
+                            color: Colors.teal
                         }
                         ColumnLayout {
                             spacing: 0
@@ -219,13 +253,13 @@ Item {
                                     text: currentTemp
                                     font.pixelSize: 34; font.weight: Font.Bold
                                     font.family: "JetBrainsMono Nerd Font"
-                                    color: C.fg0
+                                    color: Colors.fg0
                                 }
                                 Text {
                                     text: "°C"
                                     font.pixelSize: 15
                                     font.family: "JetBrainsMono Nerd Font"
-                                    color: C.fg2
+                                    color: Colors.fg2
                                     Layout.alignment: Qt.AlignTop; Layout.topMargin: 5
                                 }
                             }
@@ -233,14 +267,14 @@ Item {
                                 text: currentDesc
                                 font.pixelSize: 11
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.fg2
+                                color: Colors.fg2
                             }
                             Text {
                                 text: location !== "" ? "󰍎  " + location : ""
                                 visible: location !== ""
                                 font.pixelSize: 10
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.muted
+                                color: Colors.muted
                             }
                         }
                         Item { Layout.fillWidth: true }
@@ -252,9 +286,9 @@ Item {
                         spacing: 8
                         Repeater {
                             model: [
-                                { icon: "󰖎", val: feelsLike + "°", lbl: "Feels", col: C.blue },
-                                { icon: "󰖌", val: humidity + "%",  lbl: "Humid", col: C.teal },
-                                { icon: "󰖝", val: windspeed,        lbl: "km/h",  col: C.accent2 }
+                                { icon: "󰖎", val: feelsLike + "°", lbl: "Feels", col: Colors.blue },
+                                { icon: "󰖌", val: humidity + "%",  lbl: "Humid", col: Colors.teal },
+                                { icon: "󰖝", val: windspeed,        lbl: "km/h",  col: Colors.accent2 }
                             ]
                             delegate: Rectangle {
                                 required property var modelData
@@ -278,14 +312,14 @@ Item {
                                         text: modelData.val
                                         font.pixelSize: 12; font.weight: Font.DemiBold
                                         font.family: "JetBrainsMono Nerd Font"
-                                        color: C.fg0
+                                        color: Colors.fg0
                                     }
                                     Text {
                                         Layout.alignment: Qt.AlignHCenter
                                         text: modelData.lbl
                                         font.pixelSize: 8
                                         font.family: "JetBrainsMono Nerd Font"
-                                        color: C.muted
+                                        color: Colors.muted
                                     }
                                 }
                             }
@@ -296,7 +330,7 @@ Item {
                         text: "FORECAST"
                         font.pixelSize: 9; font.weight: Font.Bold
                         font.family: "JetBrainsMono Nerd Font"
-                        color: C.muted
+                        color: Colors.muted
                         Layout.topMargin: 2
                     }
 
@@ -311,27 +345,27 @@ Item {
                                 text: Qt.formatDateTime(new Date(modelData.date), "ddd")
                                 font.pixelSize: 11; font.weight: Font.Medium
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.fg1
+                                color: Colors.fg1
                                 Layout.preferredWidth: 34
                             }
                             Text {
                                 text: modelData.icon
                                 font.pixelSize: 17
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.teal
+                                color: Colors.teal
                             }
                             Item { Layout.fillWidth: true }
                             Text {
                                 text: modelData.max + "°"
                                 font.pixelSize: 11; font.weight: Font.DemiBold
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.fg0
+                                color: Colors.fg0
                             }
                             Text {
                                 text: modelData.min + "°"
                                 font.pixelSize: 11
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.fg2
+                                color: Colors.fg2
                                 Layout.preferredWidth: 26
                                 horizontalAlignment: Text.AlignRight
                             }
@@ -359,7 +393,7 @@ Item {
                             text: monthNames[viewMonth] + " " + viewYear
                             font.pixelSize: 14; font.weight: Font.DemiBold
                             font.family: "JetBrainsMono Nerd Font"
-                            color: C.fg0
+                            color: Colors.fg0
                         }
                         Item { Layout.fillWidth: true }
                         Rectangle {
@@ -367,7 +401,7 @@ Item {
                             color: prevHover.containsMouse ? Qt.rgba(0x88/255,0xc0/255,0xd0/255,0.18) : "transparent"
                             Behavior on color { ColorAnimation { duration: 120 } }
                             Text { anchors.centerIn: parent; text: "󰅁"; font.pixelSize: 13
-                                   font.family: "JetBrainsMono Nerd Font"; color: C.accent }
+                                   font.family: "JetBrainsMono Nerd Font"; color: Colors.accent }
                             MouseArea {
                                 id: prevHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: { viewMonth--; if (viewMonth < 0) { viewMonth = 11; viewYear-- } }
@@ -378,7 +412,7 @@ Item {
                             color: nextHover.containsMouse ? Qt.rgba(0x88/255,0xc0/255,0xd0/255,0.18) : "transparent"
                             Behavior on color { ColorAnimation { duration: 120 } }
                             Text { anchors.centerIn: parent; text: "󰅂"; font.pixelSize: 13
-                                   font.family: "JetBrainsMono Nerd Font"; color: C.accent }
+                                   font.family: "JetBrainsMono Nerd Font"; color: Colors.accent }
                             MouseArea {
                                 id: nextHover; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                                 onClicked: { viewMonth++; if (viewMonth > 11) { viewMonth = 0; viewYear++ } }
@@ -395,7 +429,7 @@ Item {
                                 text: modelData
                                 font.pixelSize: 10; font.weight: Font.DemiBold
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: index >= 5 ? C.red : C.muted
+                                color: index >= 5 ? Colors.red : Colors.muted
                             }
                         }
                     }
@@ -418,14 +452,14 @@ Item {
                                 Rectangle {
                                     anchors.centerIn: parent
                                     width: 27; height: 27; radius: 13.5
-                                    color: C.accent; visible: isToday; opacity: 0.45
+                                    color: Colors.accent; visible: isToday; opacity: 0.45
                                     layer.enabled: isToday
                                     layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 26; autoPaddingEnabled: true }
                                 }
                                 Rectangle {
                                     anchors.centerIn: parent
                                     width: 27; height: 27; radius: 13.5
-                                    color: isToday ? C.accent
+                                    color: isToday ? Colors.accent
                                          : dayHover.containsMouse && !isBlank ? Qt.rgba(0x4c/255,0x56/255,0x6a/255,0.45)
                                          : "transparent"
                                     Behavior on color { ColorAnimation { duration: 120 } }
@@ -435,9 +469,9 @@ Item {
                                         font.pixelSize: 12
                                         font.family: "JetBrainsMono Nerd Font"
                                         font.weight: isToday ? Font.Bold : Font.Normal
-                                        color: isToday ? C.bg0
+                                        color: isToday ? Colors.bg0
                                              : isWeekend ? Qt.rgba(0xbf/255,0x61/255,0x6a/255,0.85)
-                                             : C.fg1
+                                             : Colors.fg1
                                     }
                                     MouseArea {
                                         id: dayHover; anchors.fill: parent
@@ -467,7 +501,7 @@ Item {
                         Layout.alignment: Qt.AlignHCenter
                         font.pixelSize: 9; font.weight: Font.Bold
                         font.family: "JetBrainsMono Nerd Font"
-                        color: C.muted
+                        color: Colors.muted
                     }
 
                     PowerActions {
@@ -494,7 +528,7 @@ Item {
                         text: "TASKS · DUE SOONEST"
                         font.pixelSize: 9; font.weight: Font.Bold
                         font.family: "JetBrainsMono Nerd Font"
-                        color: C.muted
+                        color: Colors.muted
                     }
                     Item { Layout.fillWidth: true }
 
@@ -515,13 +549,13 @@ Item {
                                 text: "󰠮"
                                 font.pixelSize: 13
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.accent
+                                color: Colors.accent
                             }
                             Text {
                                 text: "Open in Obsidian"
                                 font.pixelSize: 10; font.weight: Font.DemiBold
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: C.fg1
+                                color: Colors.fg1
                             }
                         }
                         MouseArea {
@@ -542,7 +576,7 @@ Item {
                     text: "󰄬  All clear — nothing due."
                     font.pixelSize: 11
                     font.family: "JetBrainsMono Nerd Font"
-                    color: C.fg2
+                    color: Colors.fg2
                 }
 
                 Repeater {
@@ -566,7 +600,7 @@ Item {
                                 text: modelData.rel
                                 font.pixelSize: 9; font.weight: Font.DemiBold
                                 font.family: "JetBrainsMono Nerd Font"
-                                color: modelData.overdue ? C.red : C.teal
+                                color: modelData.overdue ? Colors.red : Colors.teal
                             }
                         }
 
@@ -576,7 +610,79 @@ Item {
                             elide: Text.ElideRight
                             font.pixelSize: 12
                             font.family: "JetBrainsMono Nerd Font"
-                            color: C.fg0
+                            color: Colors.fg0
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                Layout.fillWidth: true; height: 1
+                color: Qt.rgba(Colors.bg3.r, Colors.bg3.g, Colors.bg3.b, 0.35)
+            }
+
+            // ── Theme switcher ────────────────────────────────────────
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 10
+
+                Text {
+                    text: "THEME"
+                    font.pixelSize: 9; font.weight: Font.Bold
+                    font.family: "JetBrainsMono Nerd Font"
+                    color: Colors.muted
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Repeater {
+                        model: root.themes
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool active: modelData === root.activeTheme
+
+                            implicitWidth: pillRow.implicitWidth + 24
+                            implicitHeight: 28
+                            radius: 14
+                            color: active
+                                 ? Qt.rgba(Colors.accent.r, Colors.accent.g, Colors.accent.b, 0.22)
+                                 : pillHover.containsMouse
+                                 ? Qt.rgba(Colors.bg3.r, Colors.bg3.g, Colors.bg3.b, 0.55)
+                                 : Qt.rgba(Colors.bg2.r, Colors.bg2.g, Colors.bg2.b, 0.45)
+                            border.width: active ? 1 : 0
+                            border.color: Colors.accent
+                            Behavior on color { ColorAnimation { duration: 120 } }
+
+                            RowLayout {
+                                id: pillRow
+                                anchors.centerIn: parent
+                                spacing: 6
+
+                                Text {
+                                    visible: active
+                                    text: "󰄬"
+                                    font.pixelSize: 11
+                                    font.family: "JetBrainsMono Nerd Font"
+                                    color: Colors.accent
+                                }
+                                Text {
+                                    text: modelData
+                                    font.pixelSize: 11
+                                    font.weight: active ? Font.DemiBold : Font.Normal
+                                    font.family: "JetBrainsMono Nerd Font"
+                                    color: active ? Colors.fg0 : Colors.fg1
+                                }
+                            }
+
+                            MouseArea {
+                                id: pillHover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.applyTheme(modelData)
+                            }
                         }
                     }
                 }

@@ -11,4 +11,12 @@ ShellRoot {
         description: "Toggle bar visibility"
         onPressed: bar.visible = !bar.visible
     }
+
+    // SUPER+SHIFT+W registered in hyprland.conf as:
+    // bind = $mainMod SHIFT, W, global, quickshell:toggledashboard
+    GlobalShortcut {
+        name: "toggledashboard"
+        description: "Toggle dashboard popup"
+        onPressed: bar.toggleDashboard()
+    }
 }

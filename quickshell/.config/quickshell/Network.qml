@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Io
-import "Colors.js" as C
 
 Item {
     implicitWidth: row.implicitWidth
@@ -48,14 +47,14 @@ Item {
             text: netIcon
             font.pixelSize: 14
             font.family: "JetBrainsMono Nerd Font"
-            color: state === "offline" ? C.muted : C.accent
+            color: state === "offline" ? Colors.muted : Colors.accent
         }
         Text {
             text: netText
             font.pixelSize: 12
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.Medium
-            color: C.fg1
+            color: Colors.fg1
         }
     }
 }

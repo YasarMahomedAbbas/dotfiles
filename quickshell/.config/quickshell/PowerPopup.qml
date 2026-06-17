@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Effects
-import "Colors.js" as C
 
 Item {
     id: root

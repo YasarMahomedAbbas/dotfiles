@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Io
-import "Colors.js" as C
 
 Item {
     implicitWidth: row.implicitWidth
@@ -61,14 +60,14 @@ Item {
                         : volumePct >= 70 ? "󰕾" : volumePct >= 30 ? "󰖀" : "󰕿"
             font.pixelSize: 15
             font.family: "JetBrainsMono Nerd Font"
-            color: muted ? C.muted : C.yellow
+            color: muted ? Colors.muted : Colors.yellow
         }
         Text {
             text: muted ? "muted" : volumePct + "%"
             font.pixelSize: 12
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.Medium
-            color: muted ? C.muted : C.fg1
+            color: muted ? Colors.muted : Colors.fg1
         }
     }
 

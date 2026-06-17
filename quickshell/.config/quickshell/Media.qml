@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell.Services.Mpris
-import "Colors.js" as C
 
 Item {
     implicitWidth: visible ? row.implicitWidth : 0
@@ -28,7 +27,7 @@ Item {
             text: (player && player.isPlaying) ? "󰏤" : "󰐊"
             font.pixelSize: 15
             font.family: "JetBrainsMono Nerd Font"
-            color: C.green
+            color: Colors.green
 
             MouseArea {
                 anchors.fill: parent
@@ -42,7 +41,7 @@ Item {
             text: "󰒭"
             font.pixelSize: 14
             font.family: "JetBrainsMono Nerd Font"
-            color: C.fg2
+            color: Colors.fg2
             visible: player && player.canGoNext
 
             MouseArea {
@@ -64,7 +63,7 @@ Item {
             font.pixelSize: 11
             font.family: "JetBrainsMono Nerd Font"
             font.weight: Font.Medium
-            color: C.fg1
+            color: Colors.fg1
         }
     }
 }

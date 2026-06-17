@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
-import "Colors.js" as C
 
 PanelWindow {
     id: root
@@ -13,6 +12,15 @@ PanelWindow {
     function closeAll() {
         dashboardOpen = false
         powerOpen     = false
+    }
+
+    // Toggle the dashboard popup; ensure the bar is visible when opening it
+    // (so the keybind still works after the bar has been hidden).
+    function toggleDashboard() {
+        var was = dashboardOpen
+        closeAll()
+        if (!was) visible = true
+        dashboardOpen = !was
     }
 
     readonly property int barH: 42
@@ -56,11 +64,7 @@ PanelWindow {
         Island {
             anchors { horizontalCenter: parent.horizontalCenter; verticalCenter: parent.verticalCenter }
             Clock {
-                onToggleCalendar: {
-                    var was = root.dashboardOpen
-                    root.closeAll()
-                    root.dashboardOpen = !was
-                }
+                onToggleCalendar: root.toggleDashboard()
             }
         }
 
@@ -80,11 +84,7 @@ PanelWindow {
                 Battery {}
 
                 Weather {
-                    onToggleWeather: {
-                        var was = root.dashboardOpen
-                        root.closeAll()
-                        root.dashboardOpen = !was
-                    }
+                    onToggleWeather: root.toggleDashboard()
                 }
 
                 PowerButton {

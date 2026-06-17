@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Effects
-import "Colors.js" as C
 
 // A frosted-glass "island": a translucent rounded container that groups
 // several bare modules. The wallpaper bleeds through slightly, a soft drop
@@ -13,7 +12,7 @@ Item {
     property real hpad: 12
     property real radius: 15
     property bool glow: false              // optional accent rim glow
-    property color glowColor: C.accent
+    property color glowColor: Colors.accent
 
     default property alias content: holder.data
 
@@ -46,11 +45,11 @@ Item {
         radius: root.radius
 
         gradient: Gradient {
-            GradientStop { position: 0.0; color: Qt.rgba(0x43/255, 0x4c/255, 0x5e/255, 0.62) }
-            GradientStop { position: 1.0; color: Qt.rgba(0x2e/255, 0x34/255, 0x40/255, 0.72) }
+            GradientStop { position: 0.0; color: Qt.rgba(Colors.bg2.r, Colors.bg2.g, Colors.bg2.b, 0.62) }
+            GradientStop { position: 1.0; color: Qt.rgba(Colors.bg1.r, Colors.bg1.g, Colors.bg1.b, 0.72) }
         }
         border.width: 1
-        border.color: Qt.rgba(0x4c/255, 0x56/255, 0x6a/255, 0.40)
+        border.color: Qt.rgba(Colors.bg3.r, Colors.bg3.g, Colors.bg3.b, 0.40)
 
         layer.enabled: true
         layer.effect: MultiEffect {
@@ -66,7 +65,7 @@ Item {
             anchors { top: parent.top; left: parent.left; right: parent.right
                       topMargin: 1; leftMargin: root.radius; rightMargin: root.radius }
             height: 1
-            color: Qt.rgba(0xec/255, 0xef/255, 0xf4/255, 0.07)
+            color: Qt.rgba(Colors.fg0.r, Colors.fg0.g, Colors.fg0.b, 0.07)
         }
 
         // Content slot — hugs its child so the island width never feeds back
