@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Hyprland
 
 PanelWindow {
     id: root
@@ -8,6 +9,20 @@ PanelWindow {
     // Popup state — only one open at a time
     property bool dashboardOpen: false
     property bool powerOpen:     false
+
+    readonly property bool anyPopupOpen: dashboardOpen || powerOpen
+
+    // Take keyboard focus only while a popup is open, so Escape can close it
+    // without the bar stealing focus the rest of the time.
+    focusable: anyPopupOpen
+
+    // Grab input while a popup is open: a click anywhere outside this window
+    // fires `cleared`, which closes the popup.
+    HyprlandFocusGrab {
+        windows: [root]
+        active: root.anyPopupOpen
+        onCleared: root.closeAll()
+    }
 
     function closeAll() {
         dashboardOpen = false
@@ -102,6 +117,11 @@ PanelWindow {
     Item {
         anchors { top: barStrip.bottom; left: parent.left; right: parent.right; bottom: parent.bottom }
         clip: true
+
+        // Escape closes whichever popup is open. Grab focus while open so the
+        // key reaches us even though the bar isn't normally focusable.
+        focus: root.anyPopupOpen
+        Keys.onEscapePressed: root.closeAll()
 
         // Dashboard — calendar + weather, under the centre clock
         DashboardPopup {
