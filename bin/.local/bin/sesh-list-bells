@@ -1,0 +1,28 @@
+#!/bin/bash
+# `sesh list` with a bell glyph appended to any running tmux session whose
+# @claude_alert user-option is set — i.e. Claude finished or is waiting for
+# input in that session and you haven't looked yet.
+#
+# The flag is SET by Claude's Stop / PermissionRequest hooks
+# (~/.claude/settings.json) and CLEARED the moment you switch into the session
+# (client-session-changed / client-attached hooks in ~/.tmux.conf).
+#
+# Used by sesh-picker. All `sesh list` flags are passed straight through, so the
+# ctrl-t/-c/-z reload views get the same decoration (harmless for non-session
+# rows — the has-session check just fails and no bell is added).
+
+# Leading space + nord red + nf bell (U+F0F3) + reset. The truecolor escape
+# (38;2;191;97;106) is unique to this glyph, so sesh-picker can strip it cleanly.
+bell="$(printf ' \033[38;2;191;97;106m\033[0m')"
+
+sesh list "$@" | while IFS= read -r line; do
+  # strip ANSI, then the leading icon glyph + spaces (same cleaning as sesh-preview)
+  name="$(printf '%s' "$line" \
+    | sed -E 's/\x1b\[[0-9;]*m//g; s/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//')"
+  if tmux has-session -t "=$name" 2>/dev/null \
+     && [ -n "$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)" ]; then
+    printf '%s%s\n' "$line" "$bell"
+  else
+    printf '%s\n' "$line"
+  fi
+done

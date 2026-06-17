@@ -8,10 +8,14 @@
 
 raw="$1"
 
-# strip ANSI colour codes, then the leading icon glyph + spaces
+# strip ANSI colour codes, the leading icon glyph + spaces, and the trailing
+# attention bell (U+F0F3) that sesh-list-bells appends — otherwise it leaks into
+# the session name and every check below (has-session, -d) fails, falling through
+# to an empty generic preview. That bell is the whole reason you're previewing.
 name="$(printf '%s' "$raw" \
   | sed -E 's/\x1b\[[0-9;]*m//g' \
-  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//')"
+  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//' \
+  | sed -E 's/[[:space:]]*\xef\x83\xb3[[:space:]]*$//')"
 
 C_ACCENT='\033[38;2;136;192;208m'   # frost cyan
 C_DIM='\033[38;2;76;86;106m'        # nord3
@@ -31,9 +35,19 @@ if tmux has-session -t "=$name" 2>/dev/null; then
             printf "  ${C_DIM}%s: %s  %sp${C_RESET}\n" "$idx" "$wname" "$panes"
         fi
     done
-    printf "\n${C_DIM}  ── active pane ──${C_RESET}\n"
-    active="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"
-    tmux capture-pane -ep -t "=$name:$active" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | head -30
+    # If Claude flagged a specific pane (its Stop/PermissionRequest hook stores
+    # that pane's id in @claude_alert), preview THAT pane — i.e. exactly what
+    # Claude is showing / asking for — taking the tail so a permission prompt at
+    # the bottom is visible. Otherwise fall back to the session's active pane.
+    alert_pane="$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)"
+    if [ -n "$alert_pane" ] && tmux capture-pane -p -t "$alert_pane" >/dev/null 2>&1; then
+        printf "\n${C_ACCENT}  ──  Claude · needs attention ──${C_RESET}\n"
+        tmux capture-pane -ep -t "$alert_pane" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | tail -30
+    else
+        printf "\n${C_DIM}  ── active pane ──${C_RESET}\n"
+        active="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"
+        tmux capture-pane -ep -t "=$name:$active" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | head -30
+    fi
     exit 0
 fi
 
