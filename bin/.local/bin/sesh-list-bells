@@ -11,9 +11,15 @@
 # ctrl-t/-c/-z reload views get the same decoration (harmless for non-session
 # rows — the has-session check just fails and no bell is added).
 
-# Leading space + nord red + nf bell (U+F0F3) + reset. The truecolor escape
-# (38;2;191;97;106) is unique to this glyph, so sesh-picker can strip it cleanly.
-bell="$(printf ' \033[38;2;191;97;106m\033[0m')"
+# Bell colour follows the active theme (SESH_BELL_COLOR, hex, from
+# ~/.config/theme/sesh-colors.sh); falls back to nord red if theme-switch hasn't
+# run yet. fzf --ansi strips the colour escape from the picker's output, leaving
+# just the glyph (U+F0F3, octal \357\203\263) for sesh-picker's sed to remove.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
+bell_hex="${SESH_BELL_COLOR:-bf616a}"
+bell="$(printf ' \033[38;2;%d;%d;%dm\357\203\263\033[0m' \
+  "$((16#${bell_hex:0:2}))" "$((16#${bell_hex:2:2}))" "$((16#${bell_hex:4:2}))")"
 
 sesh list "$@" | while IFS= read -r line; do
   # strip ANSI, then the leading icon glyph + spaces (same cleaning as sesh-preview)
