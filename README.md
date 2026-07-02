@@ -14,7 +14,7 @@ repo is cloned.
 
 ```
 dotfiles/
-  bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-preview, powermenu)
+  bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-list-bells, sesh-preview, theme-switch, powermenu, gnome-powermenu)
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
@@ -57,6 +57,10 @@ stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux
 # Hyprland desktop only
 stow hypr waybar mako wofi
 ```
+
+> **Updating later:** after a `git pull` pulls in commits that add *new* files (e.g. from another
+> machine), re-link them with `stow --restow <pkg>` — stow doesn't link files that didn't exist
+> when you last stowed, so new scripts/configs stay missing from `~` until you restow.
 
 ## Usage
 

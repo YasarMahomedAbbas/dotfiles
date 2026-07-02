@@ -20,6 +20,13 @@ stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux
 > On a fresh Ubuntu box `~/.config/fish` may already exist as a real dir — back it up and
 > remove it first, or stow will refuse.
 
+> **Pulling updates later:** `git pull` only changes files inside the repo — it does **not**
+> create symlinks. Stow links the files that existed the last time you ran it, so commits made
+> on another machine that add *new* scripts/configs stay unlinked until you re-stow:
+> `stow --restow bin` (restow each affected package). Edits to already-linked files need
+> nothing. Telltale sign of a missed restow: something works as a file in the repo but isn't on
+> `PATH` — e.g. an empty `<prefix>+s` sesh picker because `sesh-list-bells` was never linked.
+
 ## 2. Universal apps
 
 **From apt:**

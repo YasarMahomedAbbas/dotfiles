@@ -36,3 +36,7 @@ end
 if test -f "$HOME/.config/theme/fzf.fish"
     source "$HOME/.config/theme/fzf.fish"
 end
+
+# bun
+set --export BUN_INSTALL "$HOME/.bun"
+set --export PATH $BUN_INSTALL/bin $PATH

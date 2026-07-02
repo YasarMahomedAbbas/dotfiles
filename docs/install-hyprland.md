@@ -23,6 +23,13 @@ stow hypr waybar mako wofi                                          # Hyprland d
 > If a target already exists as a real file/dir (e.g. a default `~/.config/fish`), remove or
 > back it up first — stow won't overwrite real files.
 
+> **Pulling updates later:** `git pull` only changes files inside the repo — it does **not**
+> create symlinks. Stow links the files that existed the last time you ran it, so commits made
+> on another machine that add *new* scripts/configs stay unlinked until you re-stow:
+> `stow --restow bin` (restow each affected package). Edits to already-linked files need
+> nothing. Telltale sign of a missed restow: something works as a file in the repo but isn't on
+> `PATH` — e.g. an empty `<prefix>+s` sesh picker because `sesh-list-bells` was never linked.
+
 ## 2. Universal apps (used on both machines)
 
 ```bash
