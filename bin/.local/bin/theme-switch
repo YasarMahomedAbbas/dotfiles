@@ -11,7 +11,13 @@
 # the matching file from there.
 set -euo pipefail
 
-DOTFILES="${DOTFILES:-$HOME/projects/personal/dotfiles}"
+# Resolve the repo root from this script's own location so theme-switch works
+# on every machine regardless of where the dotfiles live (e.g. ~/Personal/dotfiles
+# on the GNOME/Ubuntu box, ~/projects/personal/dotfiles on the Hyprland box).
+# Follows the ~/.local/bin symlink back to <repo>/bin/.local/bin/theme-switch.
+# An explicit $DOTFILES still overrides.
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+DOTFILES="${DOTFILES:-$(cd "$(dirname "$SELF")/../../.." && pwd)}"
 PALETTES="$DOTFILES/themes/palettes"
 TEMPLATES="$DOTFILES/themes/templates"
 OUT="$HOME/.config/theme"
@@ -65,6 +71,7 @@ render tmux.conf.tmpl            tmux.conf
 render hyprlock-colors.conf.tmpl hyprlock-colors.conf
 render starship.toml.tmpl        starship.toml
 render fzf.fish.tmpl             fzf.fish
+render sesh-colors.sh.tmpl       sesh-colors.sh
 render quickshell-colors.json.tmpl quickshell-colors.json
 
 echo "$theme" > "$OUT/active"

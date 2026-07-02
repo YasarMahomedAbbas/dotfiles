@@ -1,7 +1,14 @@
 #!/bin/bash
-# Nord-themed sesh picker — launched from tmux (prefix+s) inside a display-popup.
-# Colors are passed explicitly so it doesn't depend on FZF_DEFAULT_OPTS (which the
-# popup's /bin/sh shell never sees).
+# sesh picker — launched from tmux (prefix+s) inside a display-popup.
+# Colors follow the active theme via ~/.config/theme/sesh-colors.sh (rendered by
+# theme-switch). They're passed to fzf explicitly rather than via FZF_DEFAULT_OPTS
+# because the popup's /bin/sh shell never sees fish's exported opts.
+
+# Pull SESH_FZF_COLORS from the active theme; fall back to a dark-nord default so
+# the picker still renders if theme-switch has never been run on this machine.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
+: "${SESH_FZF_COLORS:=bg+:#1b1f27,bg:#0a0b0e,fg:#d8dee9,fg+:#eceff4,hl:#88c0d0,hl+:#88c0d0,border:#88c0d0,label:#88c0d0,gutter:#0a0b0e,prompt:#81a1c1,pointer:#b48ead,marker:#a3be8c,info:#60697d,header:#6c7a96,spinner:#81a1c1}"
 
 # Nerd-font bits, generated via printf with explicit codepoints (plain-ASCII source)
 prompt="$(printf '   ')"     # U+F002 magnifier
@@ -9,14 +16,14 @@ pointer="$(printf '')"        # U+F0DA caret
 label="$(printf '  sesh ')"   # U+F120 terminal
 
 selected="$(
-  sesh-list-bells --icons --hide-duplicates | fzf \
+  sesh-list-bells --icons | fzf \
     --ansi --no-sort --reverse --height 100% \
     --border=rounded --border-label "$label" \
     --prompt "$prompt" --pointer "$pointer" \
-    --color='bg+:#3b4252,bg:#2e3440,fg:#d8dee9,fg+:#eceff4,hl:#88c0d0,hl+:#88c0d0,border:#88c0d0,label:#88c0d0,gutter:#2e3440,prompt:#81a1c1,pointer:#b48ead,marker:#a3be8c,info:#4c566a,header:#616e88,spinner:#81a1c1' \
+    --color="$SESH_FZF_COLORS" \
     --header 'ctrl-a all | ctrl-t tmux | ctrl-c config | ctrl-x zoxide' \
     --bind 'tab:down,btab:up' \
-    --bind 'ctrl-a:reload(sesh-list-bells --icons --hide-duplicates)' \
+    --bind 'ctrl-a:reload(sesh-list-bells --icons)' \
     --bind 'ctrl-t:reload(sesh-list-bells -t --icons)' \
     --bind 'ctrl-c:reload(sesh-list-bells -c --icons)' \
     --bind 'ctrl-x:reload(sesh-list-bells -z --icons)' \
