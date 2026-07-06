@@ -16,11 +16,17 @@ startup_command = "tmux-dev-layout {}"
 [[session]]
 name = "prepahead"
 path = "~/projects/personal/prepahead"
-startup_command = "tmux-dev-layout {} 'npm run dev'"
+startup_command = "tmux-dev-layout {} 'dev||npm run dev'"
+
+[[session]]
+name = "equipx"
+path = "~/projects/personal/EquipX"
+startup_command = "tmux-dev-layout {} 'dev||npm run dev'"
 
 [[session]]
 name = "travelsmart"
-# NOTE: simplified vs the old tmuxifier layout — opens in Frontend with a dev window.
-# The old layout also had a backend split; add it back here if you miss it.
-path = "~/projects/org/whitewolfstudios/travel-smart/Frontend"
-startup_command = "tmux-dev-layout {} 'npm run dev'"
+# Claude pane opens in Frontend. Windows: dev (`npm run dev` in Frontend),
+# backend (`make up` from the repo root to bring the stack up), docker
+# (lazydocker to monitor the backend containers).
+path = "~/projects/org/whitewolfstudios/travel-smart"
+startup_command = "tmux-dev-layout {} --claude-dir {}/Frontend 'dev|Frontend|npm run dev' 'backend||make up' 'docker||lazydocker'"

@@ -17,7 +17,7 @@ Stow **everything** on this machine (universal + Hyprland-only):
 
 ```bash
 stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux   # universal
-stow hypr waybar mako wofi                                          # Hyprland desktop
+stow hypr waybar mako wofi streamdeck                               # Hyprland desktop
 ```
 
 > If a target already exists as a real file/dir (e.g. a default `~/.config/fish`), remove or
@@ -35,7 +35,7 @@ stow hypr waybar mako wofi                                          # Hyprland d
 ```bash
 sudo pacman -S --needed \
   ghostty neovim starship lazygit git-delta diffnav \
-  fish tmux ripgrep fd fzf zoxide eza yazi github-cli ttf-jetbrains-mono-nerd
+  fish tmux ripgrep fd fzf zoxide eza lazydocker github-cli ttf-jetbrains-mono-nerd
 paru -S --needed sesh             # AUR (tmux session manager; picker on <prefix>+s)
 ```
 
@@ -50,7 +50,7 @@ paru -S --needed sesh             # AUR (tmux session manager; picker on <prefix
 | fzf | fuzzy finder — backs the sesh picker (`sesh-picker`) |
 | zoxide | smarter `cd` + recent-dir source for the sesh picker (`zoxide init fish` in `config.fish`) |
 | eza | tree/file previews in the sesh picker |
-| yazi | file-manager window in `tmux-dev-layout` |
+| lazydocker | container monitor window in `tmux-dev-layout` (travelsmart backend) |
 | github-cli (`gh`) | required by gh-dash |
 | ttf-jetbrains-mono-nerd | glyphs for ghostty/tmux/starship/nvim |
 
@@ -81,7 +81,36 @@ sudo pacman -S --needed \
 > Edit `monitor=HDMI-A-1,...` in `hyprland.conf` to match your display (current setup is a
 > 3440×1440 ultrawide).
 
-## 4. Post-install
+## 4. Stream Deck dashboard (optional)
+
+Physical tmux/Claude session dashboard on an Elgato Stream Deck — see the **Stream Deck**
+section in the README for what it does. Needs the `hidapi` backend, `python-pillow`, and a
+udev rule for non-root access to the device.
+
+```bash
+sudo pacman -S --needed hidapi python-pillow
+
+# udev rule so your user can talk to the deck without root (vendor-wide match):
+sudo tee /etc/udev/rules.d/40-streamdeck.rules >/dev/null <<'EOF'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0fd9", MODE="0660", TAG+="uaccess"
+EOF
+sudo udevadm control --reload-rules && sudo udevadm trigger      # then replug the deck
+
+streamdeck-dashboard-setup                                       # creates the venv (streamdeck lib)
+systemctl --user enable --now streamdeck-dashboard.service
+```
+
+| Package | Role |
+|---|---|
+| hidapi | USB HID backend the `python-elgato-streamdeck` library talks to |
+| python-pillow | renders the key images (reused from system site-packages by the venv) |
+
+Layout and action bindings are the config block at the top of `streamdeck-dashboard`; the
+service logs to `journalctl --user -u streamdeck-dashboard`. Full reference:
+**[streamdeck.md](streamdeck.md)**.
+
+## 5. Post-install
 
 ```bash
 gh extension install dlvhdr/gh-dash                          # the gh-dash TUI

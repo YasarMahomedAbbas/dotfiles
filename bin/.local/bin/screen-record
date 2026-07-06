@@ -1,0 +1,35 @@
+#!/bin/bash
+# Toggle screen recording with wf-recorder.
+#   screen-record            -> toggle full-screen recording
+#   screen-record --region   -> select an area with slurp, then record
+# Recordings are saved to ~/Videos/Recordings with a timestamped name.
+# Run again while recording to stop and finalize the file.
+
+set -euo pipefail
+
+recdir="$HOME/Videos/Recordings"
+
+notify() { notify-send -a "Screen Recorder" "$@"; }
+
+# Already recording? Stop it (SIGINT lets wf-recorder finalize the mp4).
+if pgrep -x wf-recorder >/dev/null; then
+    pkill -INT -x wf-recorder
+    notify "Recording stopped" "Saved to ~/Videos/Recordings"
+    exit 0
+fi
+
+mkdir -p "$recdir"
+file="$recdir/recording_$(date +%Y-%m-%d_%H-%M-%S).mp4"
+
+geom=""
+if [[ "${1:-}" == "--region" ]]; then
+    geom="$(slurp)" || exit 1   # empty/non-zero = user cancelled
+fi
+
+if [[ -n "$geom" ]]; then
+    setsid -f wf-recorder -g "$geom" -f "$file"
+else
+    setsid -f wf-recorder -f "$file"
+fi
+
+notify "Recording started" "$(basename "$file")"

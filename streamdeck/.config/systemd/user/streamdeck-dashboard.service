@@ -1,0 +1,18 @@
+[Unit]
+Description=Stream Deck tmux/Claude dashboard
+Documentation=https://github.com/yasarmahomedabbas/dotfiles
+# Ordering only — the daemon waits for the deck and tmux on its own, so a missing
+# graphical session or unplugged deck just means it idles rather than fails.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# ~/.local/bin holds sesh-picker / theme-switch / screen-record; the rest live in /usr/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/streamdeck-dashboard/venv/bin/python %h/.local/bin/streamdeck-dashboard
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

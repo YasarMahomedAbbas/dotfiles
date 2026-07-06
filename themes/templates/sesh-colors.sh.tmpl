@@ -3,5 +3,7 @@
 # (its shell never sees fish's FZF_DEFAULT_OPTS), so it reads its colours from
 # here to stay in sync with the active palette.
 SESH_FZF_COLORS='bg+:#${bg1},bg:#${bg0},fg:#${fg1},fg+:#${fg0},hl:#${accent},hl+:#${accent},border:#${accent},label:#${accent},gutter:#${bg0},prompt:#${blue},pointer:#${purple},marker:#${green},info:#${fg2},header:#${dim},spinner:#${blue}'
-# Palette red for the Claude attention bell appended by sesh-list-bells.
+# Palette colors for the Claude status glyphs appended by sesh-list-bells:
+# red bell = needs attention, yellow bubble = still working.
 SESH_BELL_COLOR='${red}'
+SESH_BUSY_COLOR='${yellow}'

@@ -1,0 +1,15 @@
+#!/bin/bash
+# Clean a raw picker line down to the bare sesh/tmux session name:
+#   - strip fzf/ANSI colour escapes
+#   - strip the leading icon glyph (from `sesh list --icons`) + spaces
+#   - strip the trailing Claude status glyph — bell (U+F0F3) or chat
+#     bubble (U+F075) — appended by sesh-list-bells
+#
+# Reads the line from $1 if given, else from stdin. Shared by sesh-preview
+# (preview target), sesh-list-bells (has-session check), and sesh-picker
+# (ctrl-d kill target). Kept in one place so the three cleaners can't drift.
+raw="${1-$(cat)}"
+printf '%s' "$raw" \
+  | sed -E 's/\x1b\[[0-9;]*m//g' \
+  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//' \
+  | sed -E 's/[[:space:]]*(\xef\x83\xb3|\xef\x81\xb5)[[:space:]]*$//'

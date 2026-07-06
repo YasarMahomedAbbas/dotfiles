@@ -1,0 +1,25 @@
+#!/bin/bash
+# One-time setup for streamdeck-dashboard: creates the Python venv that the
+# systemd user service runs from (kept out of the repo since it's machine-local).
+# Idempotent — safe to re-run to pull library updates.
+#
+# Prerequisites (see docs/install-hyprland.md): the `hidapi` and `python-pillow`
+# system packages, and the udev rule granting non-root access to the deck.
+#
+# After this, start it with:
+#   systemctl --user enable --now streamdeck-dashboard.service
+set -euo pipefail
+
+venv="$HOME/.local/share/streamdeck-dashboard/venv"
+
+if [ ! -x "$venv/bin/python" ]; then
+  echo "Creating venv at $venv (system site-packages -> reuses system Pillow)"
+  python3 -m venv --system-site-packages "$venv"
+fi
+
+# `streamdeck` is pure-Python and talks to the system hidapi; Pillow comes from
+# system site-packages, so nothing needs compiling here.
+"$venv/bin/pip" install --quiet --upgrade pip streamdeck
+
+echo "venv ready. Enable the dashboard with:"
+echo "  systemctl --user enable --now streamdeck-dashboard.service"

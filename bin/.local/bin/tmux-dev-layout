@@ -1,43 +1,60 @@
 #!/bin/bash
-# Build the standard dev layout inside the CURRENT tmux session, then become nvim.
+# Build the standard dev layout inside the CURRENT tmux session, then become claude.
 #
 # Designed to run as a session's first-window command — either sesh's
 # startup_command, or sent into a freshly-created session by `wt-session`.
 #
-# Usage: tmux-dev-layout <project-path> [dev-command]
-#   <project-path>  directory the windows open in (defaults to $PWD)
-#   [dev-command]   optional; if given, adds a "dev" window running it (e.g. "npm run dev")
+# Usage: tmux-dev-layout <project-path> [--claude-dir DIR] [window-spec ...]
+#   <project-path>     directory the base windows open in (defaults to $PWD)
+#   --claude-dir DIR   directory for the claude pane (defaults to <project-path>)
+#   window-spec        extra window, given as 'name|dir|command'
+#                        dir: empty = <project-path>; relative = under it; absolute = as-is
 #
-# Windows: editor (nvim + claude 75/25 split) · git (lazygit) · [dev] · files (yazi)
+# Always-present windows: claude (full-screen) · git (lazygit)
+# Each window-spec adds one more window after git, e.g.:
+#   'dev||npm run dev'           dev window in the project root
+#   'dev|Frontend|npm run dev'   dev window in <project-path>/Frontend
+#   'docker||lazydocker'         a lazydocker monitor window
+#
+# nvim isn't opened up front — the Claude Code PostToolUse hook (open-plan-in-nvim)
+# splits the claude window into nvim | claude when a task-checklist plan is written.
 
 set -e
 
 [ -z "${TMUX:-}" ] && { echo "tmux-dev-layout must run inside tmux"; exit 1; }
 
 path="$(realpath "${1:-$PWD}")"
-dev_cmd="${2:-}"
+shift || true
 
-# Window 1 already exists (sesh/new-session made it) — make it the editor.
-tmux rename-window editor
+# Optional --claude-dir flag (must precede any window specs)
+claude_dir="$path"   # claude pane opens here; defaults to the project path
+if [ "${1:-}" = "--claude-dir" ]; then
+    claude_dir="$2"
+    shift 2
+fi
 
-# Right 25% pane for claude
-claude_pane="$(tmux split-window -h -l 25% -c "$path" -P -F '#{pane_id}')"
-tmux send-keys -t "$claude_pane" "claude" Enter
+# Window 1 already exists (sesh/new-session made it) — it becomes full-screen claude.
+tmux rename-window claude
 
 # Git window
 git_win="$(tmux new-window -n git -c "$path" -P -F '#{window_id}')"
 tmux send-keys -t "$git_win" "lazygit" Enter
 
-# Optional dev window
-if [ -n "$dev_cmd" ]; then
-    dev_win="$(tmux new-window -n dev -c "$path" -P -F '#{window_id}')"
-    tmux send-keys -t "$dev_win" "$dev_cmd" Enter
-fi
+# Extra windows from specs: 'name|dir|command'
+for spec in "$@"; do
+    name="${spec%%|*}"
+    rest="${spec#*|}"
+    dir="${rest%%|*}"
+    cmd="${rest#*|}"
+    case "$dir" in
+        "") wdir="$path" ;;
+        /*) wdir="$dir" ;;
+        *)  wdir="$path/$dir" ;;
+    esac
+    win="$(tmux new-window -n "$name" -c "$wdir" -P -F '#{window_id}')"
+    tmux send-keys -t "$win" "$cmd" Enter
+done
 
-# Files window
-files_win="$(tmux new-window -n files -c "$path" -P -F '#{window_id}')"
-tmux send-keys -t "$files_win" "yazi" Enter
-
-# Back to the editor window, and turn this pane into nvim
-tmux select-window -t editor
-cd "$path" && exec nvim
+# Back to the claude window, and turn this pane into claude
+tmux select-window -t claude
+cd "$claude_dir" && exec claude

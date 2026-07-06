@@ -1,34 +1,75 @@
 #!/bin/bash
-# `sesh list` with a bell glyph appended to any running tmux session whose
-# @claude_alert user-option is set — i.e. Claude finished or is waiting for
-# input in that session and you haven't looked yet.
+# `sesh list` with a Claude status glyph appended to any running tmux session:
+#   @claude_alert set -> red bell (U+F0F3): Claude finished or is waiting for
+#                        input and you haven't looked yet.
+#   @claude_busy  set -> yellow chat bubble (U+F075): Claude is still working.
+# alert wins if both are somehow set (they shouldn't be — the hooks keep them
+# mutually exclusive: UserPromptSubmit sets busy + clears alert; Stop /
+# PermissionRequest clear busy + set alert).
 #
-# The flag is SET by Claude's Stop / PermissionRequest hooks
-# (~/.claude/settings.json) and CLEARED the moment you switch into the session
-# (client-session-changed / client-attached hooks in ~/.tmux.conf).
+# @claude_alert is SET by Claude's Stop / PermissionRequest hooks and CLEARED
+# the moment you switch into the session (client-session-changed /
+# client-attached hooks in ~/.tmux.conf). @claude_busy is SET by the
+# UserPromptSubmit hook and CLEARED by Stop / PermissionRequest. All in
+# ~/.claude/settings.json.
 #
 # Used by sesh-picker. All `sesh list` flags are passed straight through, so the
 # ctrl-t/-c/-z reload views get the same decoration (harmless for non-session
-# rows — the has-session check just fails and no bell is added).
+# rows — the has-session check just fails and no glyph is added).
+#
+# Rows are emitted bells-first: alert (needs attention) → busy (working) →
+# everything else, each group keeping sesh's original relative order. So a
+# session waiting on you floats to the top of the picker regardless of where
+# sesh would otherwise sort it. Non-session views have no bells, so their order
+# is untouched.
 
-# Bell colour follows the active theme (SESH_BELL_COLOR, hex, from
-# ~/.config/theme/sesh-colors.sh); falls back to nord red if theme-switch hasn't
-# run yet. fzf --ansi strips the colour escape from the picker's output, leaving
-# just the glyph (U+F0F3, octal \357\203\263) for sesh-picker's sed to remove.
+# Glyph colours follow the active theme (SESH_BELL_COLOR / SESH_BUSY_COLOR, hex,
+# from ~/.config/theme/sesh-colors.sh); fall back to nord red/yellow if
+# theme-switch hasn't run yet. fzf --ansi strips the colour escape from the
+# picker's output, so sesh-picker / sesh-preview strip these by glyph alone.
 # shellcheck disable=SC1090
 [ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
 bell_hex="${SESH_BELL_COLOR:-bf616a}"
-bell="$(printf ' \033[38;2;%d;%d;%dm\357\203\263\033[0m' \
-  "$((16#${bell_hex:0:2}))" "$((16#${bell_hex:2:2}))" "$((16#${bell_hex:4:2}))")"
+busy_hex="${SESH_BUSY_COLOR:-ebcb8b}"
+bell="$(printf ' \033[38;2;%d;%d;%dm\xef\x83\xb3\033[0m' \
+  "$((16#${bell_hex:0:2}))" "$((16#${bell_hex:2:2}))" "$((16#${bell_hex:4:2}))")"   # bell    (U+F0F3)
+bubble="$(printf ' \033[38;2;%d;%d;%dm\xef\x81\xb5\033[0m' \
+  "$((16#${busy_hex:0:2}))" "$((16#${busy_hex:2:2}))" "$((16#${busy_hex:4:2}))")"  # comment (U+F075)
 
-sesh list "$@" | while IFS= read -r line; do
-  # strip ANSI, then the leading icon glyph + spaces (same cleaning as sesh-preview)
-  name="$(printf '%s' "$line" \
-    | sed -E 's/\x1b\[[0-9;]*m//g; s/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//')"
-  if tmux has-session -t "=$name" 2>/dev/null \
-     && [ -n "$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)" ]; then
-    printf '%s%s\n' "$line" "$bell"
-  else
-    printf '%s\n' "$line"
+# Only genuine tmux-session rows may carry a glyph. `sesh list` mixes in config
+# and zoxide rows, and a config row shares its live session's name — so a plain
+# name check would decorate BOTH the session row and its config twin (the latter
+# reads as a bell on a "non-session"). We instead key off `sesh list -t`, whose
+# rows are byte-identical to their counterparts in the combined/-t view; config
+# and zoxide rows never appear there, so they stay clean. In the -c/-z views no
+# row matches, so those views carry no status glyphs at all.
+session_rows="$(sesh list -t --icons 2>/dev/null)"
+
+# A glyph is also only valid if the pane its option points at still EXISTS and
+# lives in THIS session. The Claude hooks resolve the session from the attached
+# client rather than from Claude's own pane, so they sometimes stamp @claude_busy
+# / @claude_alert onto the wrong session (e.g. a plain shell ends up pointing at
+# a Claude pane elsewhere). Verifying pane ownership drops those misattributions.
+#
+# Bucket rows so bells sort to the top; process substitution (not a pipe) keeps
+# the arrays in this shell instead of a lost subshell.
+alerts=(); busy=(); rest=()
+while IFS= read -r line; do
+  if ! printf '%s\n' "$session_rows" | grep -qxF -- "$line"; then
+    rest+=("$line"); continue          # config / zoxide row — never decorated
   fi
+  name="$(sesh-clean-name "$line")"
+  ap="$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)"
+  bp="$(tmux show-options -t "$name" -qv @claude_busy 2>/dev/null)"
+  if [ -n "$ap" ] && [ "$(tmux display-message -p -t "$ap" '#{session_name}' 2>/dev/null)" = "$name" ]; then
+    alerts+=("$line$bell")
+  elif [ -n "$bp" ] && [ "$(tmux display-message -p -t "$bp" '#{session_name}' 2>/dev/null)" = "$name" ]; then
+    busy+=("$line$bubble")
+  else
+    rest+=("$line")
+  fi
+done < <(sesh list "$@")
+
+for line in "${alerts[@]}" "${busy[@]}" "${rest[@]}"; do
+  printf '%s\n' "$line"
 done

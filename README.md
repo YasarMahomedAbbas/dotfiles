@@ -34,6 +34,7 @@ dotfiles/
   waybar/     → ~/.config/waybar/
   mako/       → ~/.config/mako/
   wofi/       → ~/.config/wofi/      (launcher + powermenu styles)
+  streamdeck/ → ~/.local/bin/ + ~/.config/systemd/user/  (Stream Deck session dashboard; see Stream Deck)
 ```
 
 **GNOME-only** (not a stow package — scripts/config applied directly):
@@ -55,7 +56,7 @@ Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works 
 # universal (both machines)
 stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux
 # Hyprland desktop only
-stow hypr waybar mako wofi
+stow hypr waybar mako wofi streamdeck   # streamdeck also needs a one-time setup (see Stream Deck)
 ```
 
 > **Updating later:** after a `git pull` pulls in commits that add *new* files (e.g. from another
@@ -93,11 +94,12 @@ picker in a popup (fuzzy-jump to any running session, configured project, or
 [zoxide](https://github.com/ajeetdsouza/zoxide) directory). Configured projects live in
 `sesh/.config/sesh/sesh.toml`.
 
-Sessions get their windows from **`tmux-dev-layout`** (editor + claude split · git · optional
-dev · files), so there are no per-project layout files to maintain:
+Sessions get their windows from **`tmux-dev-layout`** (claude · git · any extra dev windows
+you specify), so there are no per-project layout files to maintain:
 
 ```bash
-tmux-dev-layout <project-path> [dev-command]   # run as a session's first-window command
+# run as a session's first-window command; each 'name|dir|command' adds a window
+tmux-dev-layout <project-path> [--claude-dir DIR] ['dev||npm run dev'] ...
 ```
 
 ### wt-session
@@ -116,3 +118,27 @@ Cycle through tmux pane layouts. Bind it in `.tmux.conf`:
 ```
 bind <key> run-shell "tmux-cycle-layout"
 ```
+
+### Stream Deck — physical session dashboard
+
+`streamdeck/` drives a 15-key Elgato Stream Deck (MK.2) as a live dashboard for the
+tmux + Claude workflow. The top row shows one key per tmux session (up to five),
+background-coloured by Claude status — red = needs you (`@claude_alert`), amber = working
+(`@claude_busy`), dim = idle — reusing the exact pane-ownership logic from `sesh-list-bells`
+so a misattributed option never lights a key. The attached session gets a cyan border. Press
+a session key to switch your terminal to it. The bottom row is actions: **PICK** (sesh popup),
+**THEME** (cycle `theme-switch`), **REC** (`screen-record` toggle), **MIC** / **MUTE**
+(`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
+`wpctl` volume, with a **BACK** key). Colours follow the active theme via
+`~/.config/theme/sesh-colors.sh`.
+
+A small Python daemon (`streamdeck-dashboard`, using `python-elgato-streamdeck`) polls tmux
+~1×/s and runs as a systemd user service. One-time setup after `stow streamdeck`:
+
+```bash
+streamdeck-dashboard-setup                                   # creates the venv (see docs/install-hyprland.md for deps)
+systemctl --user enable --now streamdeck-dashboard.service
+```
+
+Layout and action bindings live in the config block at the top of `streamdeck-dashboard`.
+Full reference — setup, configuration, service management, troubleshooting: **[docs/streamdeck.md](docs/streamdeck.md)**.

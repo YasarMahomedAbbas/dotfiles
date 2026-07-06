@@ -8,14 +8,12 @@
 
 raw="$1"
 
-# strip ANSI colour codes, the leading icon glyph + spaces, and the trailing
-# attention bell (U+F0F3) that sesh-list-bells appends — otherwise it leaks into
-# the session name and every check below (has-session, -d) fails, falling through
-# to an empty generic preview. That bell is the whole reason you're previewing.
-name="$(printf '%s' "$raw" \
-  | sed -E 's/\x1b\[[0-9;]*m//g' \
-  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//' \
-  | sed -E 's/[[:space:]]*\xef\x83\xb3[[:space:]]*$//')"
+# Clean the raw fzf line to the bare name (strips ANSI, the leading icon glyph,
+# and the trailing Claude status glyph sesh-list-bells appends); otherwise it
+# leaks into the name and every check below (has-session, -d) fails, falling
+# through to an empty generic preview. That glyph is the whole reason you're
+# previewing. Shared helper so this can't drift from sesh-list-bells/sesh-picker.
+name="$(sesh-clean-name "$raw")"
 
 C_ACCENT='\033[38;2;136;192;208m'   # frost cyan
 C_DIM='\033[38;2;76;86;106m'        # nord3
@@ -35,14 +33,24 @@ if tmux has-session -t "=$name" 2>/dev/null; then
             printf "  ${C_DIM}%s: %s  %sp${C_RESET}\n" "$idx" "$wname" "$panes"
         fi
     done
-    # If Claude flagged a specific pane (its Stop/PermissionRequest hook stores
-    # that pane's id in @claude_alert), preview THAT pane — i.e. exactly what
-    # Claude is showing / asking for — taking the tail so a permission prompt at
-    # the bottom is visible. Otherwise fall back to the session's active pane.
+    # If Claude flagged a specific pane, preview THAT pane — exactly what it is
+    # showing / asking for / working in — taking the tail so a prompt or live
+    # output at the bottom is visible. @claude_alert (Stop/PermissionRequest:
+    # done or waiting) takes priority over @claude_busy (working); they're
+    # mutually exclusive in practice. Otherwise fall back to the active pane.
+    #
+    # pane_here filters panes the hooks misattributed to another session (see
+    # sesh-list-bells): the flagged pane must actually live in THIS session,
+    # else we'd preview an unrelated session's Claude and label it as this one's.
+    pane_here() { [ -n "$1" ] && [ "$(tmux display-message -p -t "$1" '#{session_name}' 2>/dev/null)" = "$name" ]; }
     alert_pane="$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)"
-    if [ -n "$alert_pane" ] && tmux capture-pane -p -t "$alert_pane" >/dev/null 2>&1; then
+    busy_pane="$(tmux show-options -t "$name" -qv @claude_busy 2>/dev/null)"
+    if pane_here "$alert_pane" && tmux capture-pane -p -t "$alert_pane" >/dev/null 2>&1; then
         printf "\n${C_ACCENT}  ──  Claude · needs attention ──${C_RESET}\n"
         tmux capture-pane -ep -t "$alert_pane" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | tail -30
+    elif pane_here "$busy_pane" && tmux capture-pane -p -t "$busy_pane" >/dev/null 2>&1; then
+        printf "\n${C_ACCENT}  ──  Claude · working… ──${C_RESET}\n"
+        tmux capture-pane -ep -t "$busy_pane" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | tail -30
     else
         printf "\n${C_DIM}  ── active pane ──${C_RESET}\n"
         active="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"

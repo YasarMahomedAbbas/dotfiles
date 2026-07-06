@@ -56,7 +56,7 @@ sudo apt install -y \
 | **sesh** | tmux session manager (picker on `<prefix>+s`) → GitHub release (`joshmedeski/sesh`) or `go install github.com/joshmedeski/sesh/v2@latest` |
 | **zoxide** | smarter `cd` + sesh's recent-dir source → apt on 22.10+, else `curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh \| sh` |
 | **eza** | file/tree previews in the sesh picker → `cargo install eza` or GitHub release (`eza-community/eza`) |
-| **yazi** | file-manager window in `tmux-dev-layout` → `cargo install --locked yazi-fm` or GitHub release (`sxyazi/yazi`) |
+| **lazydocker** | container monitor window in `tmux-dev-layout` (travelsmart backend) → GitHub release (`jesseduffield/lazydocker`) or `go install github.com/jesseduffield/lazydocker@latest` |
 | **claude** | claude.com/code — required by the `work` script |
 
 ## 3. Post-install

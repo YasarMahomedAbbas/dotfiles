@@ -1,0 +1,48 @@
+#!/bin/bash
+# Claude Code PostToolUse(Write) hook: when Claude writes a task-checklist plan,
+# show it in nvim beside the Claude pane (nvim | claude).
+#
+# Fed the PostToolUse JSON on stdin; keys off .tool_input.file_path. Harmless for
+# every other Write (exits 0 immediately) and outside tmux.
+#
+# Behaviour:
+#   - No nvim in Claude's window -> split Claude's pane 50/50, nvim on the LEFT,
+#     focus stays on Claude (-d) so you can approve/answer the plan prompt.
+#   - nvim already open in that window -> :tabedit the plan into it (won't clobber
+#     unsaved buffers), no extra panes stack up.
+
+input=$(cat)
+file=$(jq -r '.tool_input.file_path // empty' <<<"$input")
+
+# Only act on task-checklist plan files (Frontend or Backend Docs/*/tasks/*).
+case "$file" in
+  */Docs/*/tasks/*/TASK_CHECKLIST_*.md) ;;
+  *) exit 0 ;;
+esac
+
+# Must be inside tmux and know which pane Claude is running in.
+[ -z "${TMUX:-}" ] && exit 0
+[ -z "${TMUX_PANE:-}" ] && exit 0
+
+win=$(tmux display-message -p -t "$TMUX_PANE" '#{window_id}')
+
+# Reuse the plan-nvim pane in Claude's window if one is still open. We tag the
+# pane we create with @plan_nvim_pane rather than matching pane_current_command,
+# because tmux runs the split's command under the login shell (fish), so nvim
+# shows up as a child and the pane still reports "fish".
+nvim_pane=$(tmux list-panes -t "$win" -F '#{pane_id} #{@plan_nvim_pane}' \
+  | awk '$2 == "1" { print $1; exit }')
+
+if [ -n "$nvim_pane" ]; then
+  # Open in a new tab of the running nvim (won't clobber unsaved buffers).
+  tmux send-keys -t "$nvim_pane" Escape
+  tmux send-keys -t "$nvim_pane" ":tabedit $file" Enter
+  exit 0
+fi
+
+# Otherwise split Claude's pane: nvim on the left (50%), keep focus on Claude.
+dir=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}')
+new_pane=$(tmux split-window -h -b -l 50% -d -t "$TMUX_PANE" -c "$dir" \
+  -P -F '#{pane_id}' "nvim '$file'")
+tmux set-option -p -t "$new_pane" @plan_nvim_pane 1
+exit 0
