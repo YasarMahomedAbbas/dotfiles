@@ -8,12 +8,16 @@ status — red = needs you (@claude_alert), amber = working (@claude_busy), dim 
 idle. The status logic mirrors sesh-list-bells: the flagged pane must still exist
 AND belong to that session, so a misattributed option never lights a key. The
 currently-attached session gets a cyan border. Press a session key to switch your
-terminal to it. Key 5 (MEDIA) opens the media page.
+terminal to it. Key 5 (MEDIA) opens the media page; key 6 (WORK) opens the work
+(project launcher) page; key 8 (VPS) opens the VPS page — one key per SSH host,
+each of which opens a fresh ghostty running `ssh <host>`.
 
 Bottom row (keys 10-14): PICK (sesh popup) · THEME (picker page) · REC (screen-
 record toggle) · MIC (mic mute) · MUTE (output mute). REC/MIC/MUTE reflect live
 state. MEDIA opens playerctl transport + volume controls; THEME opens a picker
-of the available theme-switch palettes (each key previews its own colours).
+of the available theme-switch palettes (each key previews its own colours); WORK
+opens a launcher of the configured projects (each key shows its logo/glyph and a
+border for the session's live state) that create-or-switch via `sesh connect`.
 
 Runs as a systemd user service (streamdeck-dashboard.service). Polls tmux ~1x/s
 and only redraws keys whose appearance actually changed, so USB traffic stays low.
@@ -44,10 +48,46 @@ from StreamDeck.ImageHelpers import PILHelper
 POLL = 1.0                      # seconds between tmux polls
 SESSION_SLOTS = list(range(5))  # keys 0-4 -> sessions (top row only)
 MEDIA_KEY = 5                   # key 5 opens the media page (freed middle row)
+WORK_KEY = 6                    # key 6 opens the work (projects) page
+VPS_KEY = 8                     # key 8 opens the VPS (ssh launcher) page
 THEME_KEY = 11                  # THEME action key opens the theme picker page
 THEME_SLOTS = list(range(10))   # theme-picker page: keys 0-9 -> themes
 THEME_BACK_KEY = 10             # theme-picker page: BACK
+WORK_SLOTS = list(range(10))    # work page: keys 0-9 -> projects
+WORK_BACK_KEY = 10              # work page: BACK
+VPS_SLOTS = [6, 8]              # VPS page: host keys, centred in the middle row
+VPS_BACK_KEY = 10               # VPS page: BACK
 PICKER_POPUP = ["display-popup", "-E", "-w", "75%", "-h", "75%", "sesh-picker"]
+
+# Work page — one key per project (in this fixed order, for muscle memory). Each
+# entry is (session_name, label, logo_file | None, glyph). session_name MUST match
+# the sesh.toml session name so a live session is detected and `sesh connect`
+# resolves the right config. logo_file (in LOGO_DIR) renders as an image; when it
+# is None the glyph is drawn in the theme accent instead.
+LOGO_DIR = Path.home() / ".local/share/streamdeck-dashboard/logos"
+WORK_PROJECTS = [
+    ("dotfiles",    "dotfiles",  None,            ""),  # gear
+    ("prepahead",   "prepahead", "prepahead.png", None),
+    ("equipx",      "equipx",    "equipx.png",    None),
+    ("gegrond",     "gegrond",   "gegrond.png",   None),
+    ("travelsmart", "travel",    "travelsmart.png", None),
+    ("vault",       "vault",     "vault.png",       None),
+]
+# Main-page session keys reuse a project's logo (when it has one) instead of the
+# session name, keyed by session name — so a running project shows its mark.
+SESSION_LOGOS = {name: logo for name, _label, logo, _glyph in WORK_PROJECTS if logo}
+GHOSTTY_CLASS = "com.mitchellh.ghostty"
+
+VPS_HOST_GLYPH = ""  # server — per-host key fallback when a host has no logo
+# VPS page — one key per SSH host, in this fixed order (muscle memory). Each entry
+# is (ssh_alias, label, logo_file | None, glyph). The alias is resolved from
+# ~/.ssh/config, so the handler just runs `ssh <alias>`. Pressing a key ALWAYS opens
+# a fresh ghostty running that ssh command. logo_file (in LOGO_DIR) renders as an
+# image; when it is None the glyph is drawn in the theme accent instead.
+VPS_HOSTS = [
+    ("hostinger-server", "hostinger", "hostinger.png", None),
+    ("stargazer",        "stargazer", "stargazer.png", None),
+]
 
 # Fallback palette (Nord-ish); live values pulled from the active theme below.
 COLORS = {
@@ -57,6 +97,7 @@ COLORS = {
     "empty":  (12, 13, 16),     # near-black, no session
     "action": (27, 31, 39),     # action-key background
     "attach": (136, 192, 208),  # frost cyan — attached-session border
+    "live":   (163, 190, 140),  # green — a running (but unattached) session
     "on":     (191, 97, 106),   # active toggle accent (REC/MUTED)
     "text":   (216, 222, 233),
     "textdim": (120, 130, 150),
@@ -73,6 +114,30 @@ def sh(*args, **kw):
         return subprocess.run(args, capture_output=True, text=True, **kw)
     except Exception:
         return subprocess.CompletedProcess(args, 1, "", "")
+
+
+def spawn(*args):
+    """Fire-and-forget launch of a long-lived GUI process (e.g. ghostty).
+
+    Must NOT use sh()/subprocess.run: those block until the process exits, and a
+    terminal we launch stays alive for as long as its window is open — which would
+    wedge the key-callback thread and freeze the whole deck.
+
+    Launch it in its OWN transient systemd scope (`systemd-run --user --scope`) so
+    the window lives outside this service's cgroup. Otherwise a plain child stays in
+    streamdeck-dashboard.service's cgroup and gets SIGTERM'd whenever the service is
+    restarted — taking the terminal window (and any tmux client in it) down with it.
+    The `--collect` cleans the scope up once the process exits. Fall back to a plain
+    detached Popen if systemd-run isn't available."""
+    if shutil.which("systemd-run"):
+        args = ("systemd-run", "--user", "--scope", "--quiet", "--collect", *args)
+    try:
+        subprocess.Popen(
+            args, start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        log("spawn failed:\n" + traceback.format_exc())
 
 
 def tmux(*args):
@@ -154,9 +219,18 @@ def attached_session():
 
 
 def switch_to(name):
+    """Switch the terminal to a session and bring its window to the front.
+
+    Mirrors the work page (open_work): if a tmux client is attached, switch it and
+    focus the ghostty window; if nothing is attached anywhere, jump to workspace 1
+    and launch ghostty attached to the session."""
     c = active_client()
     if c:
         tmux("switch-client", "-c", c, "-t", name)
+        focus_terminal()
+    else:
+        sh("hyprctl", "dispatch", "workspace", "1")
+        spawn("ghostty", "-e", "sesh", "connect", name)
 
 
 # ── action handlers + live state ─────────────────────────────────────────────
@@ -220,6 +294,61 @@ def sink_muted():
     return "MUTED" in sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@").stdout
 
 
+# ── work page (project launcher) ─────────────────────────────────────────────
+def has_session(name):
+    return tmux("has-session", "-t", f"={name}").returncode == 0
+
+
+def current_accent():
+    """The active theme's accent colour (for glyph-only project keys)."""
+    pal = theme_palette(active_theme())
+    return _hex(pal["accent"]) if pal.get("accent") else COLORS["attach"]
+
+
+def focus_terminal():
+    """Bring a terminal window to the front (focus any ghostty)."""
+    sh("hyprctl", "dispatch", "focuswindow", f"class:{GHOSTTY_CLASS}")
+
+
+def open_work(name):
+    """Open a project's tmux session and focus a terminal on it.
+
+    If a terminal (tmux client) is open, `sesh connect -s` creates the session
+    when missing — honouring the sesh.toml startup_command — and *switches* the
+    most-recently-active client to it (works even though this daemon runs outside
+    tmux), then we focus the terminal. If no client is attached anywhere, jump to
+    workspace 1 and launch ghostty attached to the session (a fresh TTY, so sesh
+    attaches, creating the session first if it doesn't exist)."""
+    if active_client():
+        sh("sesh", "connect", "-s", name)
+        focus_terminal()
+    else:
+        sh("hyprctl", "dispatch", "workspace", "1")
+        spawn("ghostty", "-e", "sesh", "connect", name)
+
+
+def open_vps(alias):
+    """Always open a fresh ghostty running `ssh <alias>`.
+
+    Unlike the work page (which switches an existing tmux client when one is
+    attached), a VPS press unconditionally spawns a new ghostty window per press —
+    each SSH session gets its own terminal. The alias is resolved from
+    ~/.ssh/config, so ghostty just execs `ssh <alias>`."""
+    spawn("ghostty", "-e", "ssh", alias)
+
+
+@lru_cache(maxsize=None)
+def load_logo(size, filename):
+    """Load a project logo scaled to fit the key, or None if it's missing."""
+    try:
+        img = Image.open(LOGO_DIR / filename).convert("RGBA")
+    except Exception:
+        return None
+    box = int(min(size) * 0.62)
+    img.thumbnail((box, box), Image.LANCZOS)
+    return img
+
+
 # glyph, label, is-active (or None), on-press
 ACTIONS = {
     10: ("", "PICK",  None,        open_picker),
@@ -231,6 +360,8 @@ ACTIONS = {
 # glyph shown when a toggle is active (muted/recording)
 ACTIVE_GLYPH = {13: "", 14: ""}  # mic-slash, volume-off
 
+WORK_GLYPH = "\uf0b1"   # briefcase — main-page key that opens the work page
+VPS_GLYPH = ""   # cloud — main-page key that opens the VPS page
 # The MEDIA key on the main page (key 5) opens the media page below.
 MEDIA_GLYPH = ""  # music note
 
@@ -270,8 +401,12 @@ def render_session(deck, name, status, attached):
     img = Image.new("RGB", (w, h), COLORS[status if name else "empty"])
     d = ImageDraw.Draw(img)
     if name:
-        fg = (30, 30, 30) if status == "busy" else COLORS["text"]
-        _draw_wrapped(d, name, (w, h), fg, 15)
+        logo = load_logo((w, h), SESSION_LOGOS[name]) if name in SESSION_LOGOS else None
+        if logo:
+            img.paste(logo, (int((w - logo.width) / 2), int((h - logo.height) / 2)), logo)
+        else:
+            fg = (30, 30, 30) if status == "busy" else COLORS["text"]
+            _draw_wrapped(d, name, (w, h), fg, 15)
     if attached:
         d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["attach"], width=4)
     return PILHelper.to_native_key_format(deck, img)
@@ -291,6 +426,31 @@ def render_action(deck, glyph, label, active):
 def render_blank(deck):
     w, h = key_size(deck)
     return PILHelper.to_native_key_format(deck, Image.new("RGB", (w, h), COLORS["empty"]))
+
+
+def render_work(deck, label, logo_file, glyph, accent, live, status, attached):
+    """A work-page project key: its logo (or a glyph in the theme accent) above
+    the project name. The border shows session state — cyan when it's the client's
+    attached session, else red/amber for Claude alert/busy or green when merely
+    running; no border when the session isn't live."""
+    w, h = key_size(deck)
+    img = Image.new("RGB", (w, h), COLORS["action"])
+    d = ImageDraw.Draw(img)
+    logo = load_logo((w, h), logo_file) if logo_file else None
+    if logo:
+        img.paste(logo, (int((w - logo.width) / 2), int(h * 0.42 - logo.height / 2)), logo)
+    else:  # no logo file (or it's missing) — fall back to the glyph
+        d.text((w / 2, h * 0.40), glyph or "", font=font(30), fill=accent, anchor="mm")
+    d.text((w / 2, h * 0.86), label, font=font(12), fill=COLORS["textdim"], anchor="mm")
+    if attached:
+        border = COLORS["attach"]
+    elif live:
+        border = {"alert": COLORS["alert"], "busy": COLORS["busy"]}.get(status, COLORS["live"])
+    else:
+        border = None
+    if border:
+        d.rectangle([0, 0, w - 1, h - 1], outline=border, width=4)
+    return PILHelper.to_native_key_format(deck, img)
 
 
 THEME_ICON = ""  # eyedropper / colour picker
@@ -353,7 +513,9 @@ class Dashboard:
         self.cache = {}           # key -> signature of last render
         self.session_at = {}      # key -> session name (for press handling)
         self.theme_at = {}        # key -> theme name (theme-picker page)
-        self.view = "main"        # "main" | "media" | "themes"
+        self.work_at = {}         # key -> project session name (work page)
+        self.vps_at = {}          # key -> ssh alias (vps page)
+        self.view = "main"        # "main" | "media" | "themes" | "work" | "vps"
 
     def set_key(self, key, signature, render):
         if self.cache.get(key) == signature:
@@ -374,7 +536,9 @@ class Dashboard:
         # Each view draws all 15 keys (unused ones blanked) so the cache diffs
         # cleanly when switching pages — no stale key art lingers.
         {"media": self._refresh_media,
-         "themes": self._refresh_themes}.get(self.view, self._refresh_main)()
+         "themes": self._refresh_themes,
+         "work": self._refresh_work,
+         "vps": self._refresh_vps}.get(self.view, self._refresh_main)()
 
     def _refresh_main(self):
         sessions = list_sessions()
@@ -389,7 +553,9 @@ class Dashboard:
                          lambda n=name, s=status, a=is_attached:
                              render_session(self.deck, n, s, a))
         self._action(MEDIA_KEY, MEDIA_GLYPH, "MEDIA", False)
-        used = set(SESSION_SLOTS) | {MEDIA_KEY} | set(ACTIONS)
+        self._action(WORK_KEY, WORK_GLYPH, "WORK", False)
+        self._action(VPS_KEY, VPS_GLYPH, "VPS", False)
+        used = set(SESSION_SLOTS) | {MEDIA_KEY, WORK_KEY, VPS_KEY} | set(ACTIONS)
         for key in range(self.deck.key_count()):
             if key not in used:
                 self._blank(key)
@@ -431,17 +597,72 @@ class Dashboard:
             if key not in used:
                 self._blank(key)
 
+    def _refresh_work(self):
+        self.session_at = {}
+        self.work_at = {}
+        live = set(list_sessions())
+        attached = attached_session()
+        accent = current_accent()
+        for i, key in enumerate(WORK_SLOTS):
+            proj = WORK_PROJECTS[i] if i < len(WORK_PROJECTS) else None
+            if not proj:
+                self.work_at[key] = None
+                self._blank(key)
+                continue
+            name, label, logo_file, glyph = proj
+            self.work_at[key] = name
+            is_live = name in live
+            status = session_status(name) if is_live else "idle"
+            is_attached = name == attached
+            self.set_key(key, ("w", label, logo_file, glyph, accent, is_live, status, is_attached),
+                         lambda l=label, lf=logo_file, g=glyph, a=accent, lv=is_live, s=status, at=is_attached:
+                             render_work(self.deck, l, lf, g, a, lv, s, at))
+        self._action(WORK_BACK_KEY, MEDIA_ACTIONS[10][0], "BACK", False)
+        used = set(WORK_SLOTS) | {WORK_BACK_KEY}
+        for key in range(self.deck.key_count()):
+            if key not in used:
+                self._blank(key)
+
+    def _refresh_vps(self):
+        self.session_at = {}
+        self.vps_at = {}
+        accent = current_accent()
+        for i, key in enumerate(VPS_SLOTS):
+            host = VPS_HOSTS[i] if i < len(VPS_HOSTS) else None
+            if not host:
+                self.vps_at[key] = None
+                self._blank(key)
+                continue
+            alias, label, logo_file, glyph = host
+            self.vps_at[key] = alias
+            # reuse the work-key renderer with no live state (VPS hosts aren't tmux
+            # sessions) — just the host's logo (or the glyph in the theme accent) + label.
+            self.set_key(key, ("v", label, logo_file, glyph, accent),
+                         lambda l=label, lf=logo_file, g=glyph, a=accent:
+                             render_work(self.deck, l, lf, g, a, False, "idle", False))
+        self._action(VPS_BACK_KEY, MEDIA_ACTIONS[10][0], "BACK", False)
+        used = set(VPS_SLOTS) | {VPS_BACK_KEY}
+        for key in range(self.deck.key_count()):
+            if key not in used:
+                self._blank(key)
+
     def on_press(self, deck, key, pressed):
         if not pressed:
             return
         {"media": self._press_media,
-         "themes": self._press_themes}.get(self.view, self._press_main)(key)
+         "themes": self._press_themes,
+         "work": self._press_work,
+         "vps": self._press_vps}.get(self.view, self._press_main)(key)
         # reflect the result quickly instead of waiting for the next poll
         self.refresh()
 
     def _press_main(self, key):
         if key == MEDIA_KEY:
             self.view = "media"
+        elif key == WORK_KEY:
+            self.view = "work"
+        elif key == VPS_KEY:
+            self.view = "vps"
         elif key == THEME_KEY:
             self.view = "themes"
         elif key in ACTIONS:
@@ -468,24 +689,85 @@ class Dashboard:
             if name:                  # apply the theme; stay so you can audition
                 sh("theme-switch", name)
 
+    def _press_work(self, key):
+        if key == WORK_BACK_KEY:
+            self.view = "main"
+            return
+        name = self.work_at.get(key)
+        if name:                      # launch/attach the project, then drop to main
+            open_work(name)
+            self.view = "main"
 
-def wait_for_deck():
-    while True:
-        decks = DeviceManager().enumerate()
+    def _press_vps(self, key):
+        if key == VPS_BACK_KEY:
+            self.view = "main"
+            return
+        alias = self.vps_at.get(key)
+        if alias:                     # open a new ghostty ssh session, then drop to main
+            open_vps(alias)
+            self.view = "main"
+
+
+def wait_for_deck(stop=None):
+    """Block until a deck is enumerated (or `stop` is set — then return None)."""
+    while stop is None or not stop.is_set():
+        try:
+            decks = DeviceManager().enumerate()
+        except Exception:
+            decks = []
         if decks:
             return decks[0]
-        time.sleep(2)
+        stop.wait(2) if stop is not None else time.sleep(2)
+    return None
 
 
-def main():
-    load_theme()
-    deck = wait_for_deck()
+def open_deck(deck):
     deck.open()
     deck.reset()
     deck.set_brightness(70)
     log(f"connected: {deck.deck_type()} ({deck.key_count()} keys)")
-    dash = Dashboard(deck)
-    deck.set_key_callback(dash.on_press)
+
+
+def deck_connected(deck):
+    try:
+        return deck.connected()
+    except Exception:
+        return False
+
+
+def reconnect(dash, old, stop):
+    """The deck stopped accepting writes (re-enumerated, unplugged, resumed, or a
+    wedged handle). Drop the stale handle and re-open a fresh one so the daemon
+    self-heals instead of spinning forever. Retries until it gets a handle it can
+    actually open (a wedged deck may still enumerate), or `stop` is set."""
+    try:
+        old.close()
+    except Exception:
+        pass
+    while not stop.is_set():
+        deck = wait_for_deck(stop)
+        if deck is None:                 # stopping — no new deck to bind
+            return None
+        try:
+            open_deck(deck)
+        except Exception:
+            log("reopen failed, retrying:\n" + traceback.format_exc())
+            try:
+                deck.close()
+            except Exception:
+                pass
+            stop.wait(2)
+            continue
+        with dash.lock:
+            dash.deck = deck
+            dash.cache.clear()           # force a full redraw onto the fresh handle
+        deck.set_key_callback(dash.on_press)
+        return deck
+    return None
+
+
+def main():
+    load_theme()
 
     stop = threading.Event()
     def shutdown(*_):
@@ -493,18 +775,45 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
+    deck = wait_for_deck(stop)
+    if deck is None:
+        return
+    open_deck(deck)
+    dash = Dashboard(deck)
+    deck.set_key_callback(dash.on_press)
+
+    # A dead/wedged USB handle surfaces as a write failure in refresh(). `connected()`
+    # only checks whether the same USB path still enumerates, so a wedged handle (or a
+    # drop-and-return on the same path) still reports connected — hence we also force a
+    # reconnect after a few consecutive failures, not just when connected() goes false.
+    RECONNECT_AFTER = 3   # consecutive failed polls before forcing a reopen
+    fail_streak = 0
     try:
         while not stop.is_set():
             try:
                 load_theme()      # pick up theme-switch changes live
                 dash.refresh()
+                fail_streak = 0
             except Exception:
-                log("refresh error:\n" + traceback.format_exc())
+                fail_streak += 1
+                gone = not deck_connected(deck)
+                if gone or fail_streak >= RECONNECT_AFTER:
+                    why = "disconnected" if gone else f"{fail_streak} write failures"
+                    log(f"deck unresponsive ({why}) — reconnecting")
+                    deck = reconnect(dash, deck, stop)
+                    if deck is None:
+                        break
+                    fail_streak = 0
+                else:
+                    log("refresh error:\n" + traceback.format_exc())
             stop.wait(POLL)
     finally:
         with dash.lock:
-            deck.reset()
-            deck.close()
+            try:
+                deck.reset()
+                deck.close()
+            except Exception:
+                pass
         log("shut down cleanly")
 
 

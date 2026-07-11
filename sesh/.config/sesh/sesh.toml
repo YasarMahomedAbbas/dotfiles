@@ -25,8 +25,21 @@ startup_command = "tmux-dev-layout {} 'dev||npm run dev'"
 
 [[session]]
 name = "travelsmart"
-# Claude pane opens in Frontend. Windows: dev (`npm run dev` in Frontend),
-# backend (`make up` from the repo root to bring the stack up), docker
-# (lazydocker to monitor the backend containers).
+# Claude pane opens in Frontend. Windows: dev (`make up` from the repo root to
+# bring the stack up), docker (lazydocker to monitor the backend containers).
 path = "~/projects/org/whitewolfstudios/travel-smart"
-startup_command = "tmux-dev-layout {} --claude-dir {}/Frontend 'dev|Frontend|npm run dev' 'backend||make up' 'docker||lazydocker'"
+startup_command = "tmux-dev-layout {} --claude-dir {}/Frontend 'dev||make up' 'docker||lazydocker'"
+
+[[session]]
+name = "gegrond"
+# Coffee-bean advisor. Claude pane opens in frontend. Windows: git (lazygit),
+# backend (`make up`).
+path = "~/projects/personal/gegrond-ai"
+startup_command = "tmux-dev-layout {} --claude-dir {}/frontend 'backend||make up'"
+
+[[session]]
+name = "vault"
+# Obsidian notes vault — just the default claude + lazygit layout; Obsidian
+# itself is never launched from here.
+path = "~/projects/vault/My-Vault"
+startup_command = "tmux-dev-layout {}"

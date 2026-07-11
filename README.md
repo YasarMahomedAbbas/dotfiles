@@ -129,8 +129,11 @@ so a misattributed option never lights a key. The attached session gets a cyan b
 a session key to switch your terminal to it. The bottom row is actions: **PICK** (sesh popup),
 **THEME** (cycle `theme-switch`), **REC** (`screen-record` toggle), **MIC** / **MUTE**
 (`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
-`wpctl` volume, with a **BACK** key). Colours follow the active theme via
-`~/.config/theme/sesh-colors.sh`.
+`wpctl` volume), a **WORK** key opens a project launcher — one key per configured project
+(logo + name, bordered by its live session state) that create-or-switches via `sesh connect`,
+spawning a ghostty on workspace 1 if no terminal is open — and a **VPS** key opens an SSH
+launcher, one key per `~/.ssh/config` host, each opening a fresh ghostty running `ssh <host>`.
+Colours follow the active theme via `~/.config/theme/sesh-colors.sh`.
 
 A small Python daemon (`streamdeck-dashboard`, using `python-elgato-streamdeck`) polls tmux
 ~1×/s and runs as a systemd user service. One-time setup after `stow streamdeck`:

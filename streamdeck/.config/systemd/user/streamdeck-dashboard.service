@@ -13,6 +13,11 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/share/streamdeck-dashboard/venv/bin/python %h/.local/bin/streamdeck-dashboard
 Restart=on-failure
 RestartSec=3
+# Only signal the main daemon on stop/restart — never the whole cgroup. Terminals
+# the daemon launched (ghostty, and any tmux client inside them) must survive a
+# restart. Those are also placed in their own transient scopes via systemd-run
+# (see spawn()), so this is belt-and-suspenders for any that predate that change.
+KillMode=process
 
 [Install]
 WantedBy=graphical-session.target
