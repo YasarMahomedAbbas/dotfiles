@@ -127,8 +127,7 @@ background-coloured by Claude status — red = needs you (`@claude_alert`), ambe
 (`@claude_busy`), dim = idle — reusing the exact pane-ownership logic from `sesh-list-bells`
 so a misattributed option never lights a key. The attached session gets a cyan border. Press
 a session key to switch your terminal to it. The bottom row is actions: **PICK** (sesh popup),
-**THEME** (cycle `theme-switch`), **REC** (`screen-record` toggle), **MIC** / **MUTE**
-(`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
+**THEME** (cycle `theme-switch`), **MIC** / **MUTE** (`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
 `wpctl` volume), a **WORK** key opens a project launcher — one key per configured project
 (logo + name, bordered by its live session state) that create-or-switches via `sesh connect`,
 spawning a ghostty on workspace 1 if no terminal is open — and a **VPS** key opens an SSH

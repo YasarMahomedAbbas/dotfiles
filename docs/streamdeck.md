@@ -17,7 +17,7 @@ Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
 ├──────┼──────┼──────┼──────┼──────┤
 │MEDIA │ WORK │      │ VPS  │      │  key 5 opens media, 6 opens work, 8 opens VPS; 7 & 9 blank
 ├──────┼──────┼──────┼──────┼──────┤
-│ PICK │THEME │ REC  │ MIC  │ MUTE │  keys 10–14 — actions
+│ PICK │THEME │      │ MIC  │ MUTE │  keys 10–14 — actions (12 blank)
 └──────┴──────┴──────┴──────┴──────┘
 ```
 
@@ -53,7 +53,6 @@ of the middle row (keys 7 & 9) is blank.
 |---|---|---|---|
 | 10 | PICK | Opens the sesh picker popup (`display-popup … sesh-picker`) on the attached client | — |
 | 11 | THEME | Opens the theme picker page (below) | — |
-| 12 | REC | Toggles `screen-record` (wf-recorder) | icon turns red while recording |
 | 13 | MIC | Toggles mic mute (`wpctl … @DEFAULT_AUDIO_SOURCE@`) | icon turns red when muted |
 | 14 | MUTE | Toggles output mute (`wpctl … @DEFAULT_AUDIO_SINK@`) | icon turns red when muted |
 
@@ -224,7 +223,7 @@ library and Pillow for key images. It:
 
 It runs as a **systemd user service** (`streamdeck-dashboard.service`) ordered after
 `graphical-session.target`. The service's `PATH` includes `~/.local/bin` so it can reach
-`sesh-picker`, `theme-switch`, and `screen-record`.
+`sesh-picker` and `theme-switch`.
 
 ### Why a venv
 
@@ -292,15 +291,15 @@ Everything tunable is a config block at the top of
 | Active-state glyphs | `ACTIVE_GLYPH` | glyph swap when a toggle is active (e.g. mic-muted) |
 | Brightness | `deck.set_brightness(70)` in `main()` | 0–100 |
 
-To **re-map an action key**, edit its tuple in `ACTIONS`. For example, to make key 12 run
-a script instead of toggling `screen-record`:
+To **add or re-map an action key**, edit the `ACTIONS` dict. For example, key 12 is free —
+add a tuple to make it run a script:
 
 ```python
 12: ("", "TERM", None, lambda: sh("my-script")),
 ```
 
 The `is_active_fn` (3rd item) returns a bool to tint the key's icon with the accent color
-(used by REC/MIC/MUTE); pass `None` for a plain action. Note that `MEDIA_KEY`, `WORK_KEY` and
+(used by MIC/MUTE); pass `None` for a plain action. Note that `MEDIA_KEY`, `WORK_KEY` and
 `THEME_KEY` are page-openers intercepted in `_press_main` (their glyph entry only controls how
 the key looks), so re-mapping those means changing the intercept, not just the tuple.
 
@@ -334,7 +333,7 @@ shutdown, and logs a traceback (without dying) if a poll cycle errors.
 | Keys stay blank, service keeps restarting | Deck not accessible — check the udev rule and **replug**; `journalctl --user -u streamdeck-dashboard` will show the error. |
 | `No module named 'StreamDeck'` | venv missing or stale — re-run `streamdeck-dashboard-setup`. |
 | Names/positions mirrored | Key indexing assumes top-left origin; if a future deck differs, remap `SESSION_SLOTS`. |
-| PICK / REC do nothing | The service needs the graphical env; it inherits `WAYLAND_DISPLAY` from the user session. Check `systemctl --user show-environment | grep WAYLAND`. |
+| PICK / MIC do nothing | The service needs the graphical env; it inherits `WAYLAND_DISPLAY` from the user session. Check `systemctl --user show-environment | grep WAYLAND`. |
 | Wrong session lit | Status uses pane-ownership; if it persists, check the `@claude_*` hooks in `~/.claude/settings.json` (they must resolve the session via `-t "$TMUX_PANE"`). |
 | Work page shows glyphs, no logos | Logos not stowed — `stow --restow streamdeck` so `~/.local/share/streamdeck-dashboard/logos/` is populated (new files aren't linked by a plain `stow`). A missing logo silently falls back to the glyph. |
 | WORK key does nothing / opens wrong dir | The project's `name` in `WORK_PROJECTS` must match its `sesh.toml` session name; `sesh connect` resolves the path/layout from there. Focus needs `hyprctl` + `ghostty` on the service PATH (both in `/usr/bin`). |

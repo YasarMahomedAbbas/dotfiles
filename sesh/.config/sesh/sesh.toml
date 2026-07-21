@@ -26,9 +26,10 @@ startup_command = "tmux-dev-layout {} 'dev||npm run dev'"
 [[session]]
 name = "travelsmart"
 # Claude pane opens in Frontend. Windows: dev (`make up` from the repo root to
-# bring the stack up), docker (lazydocker to monitor the backend containers).
+# bring the stack up), docker (lazydocker to monitor the backend containers),
+# tickets (lazytickets), contracts (lazycontracts).
 path = "~/projects/org/whitewolfstudios/travel-smart"
-startup_command = "tmux-dev-layout {} --claude-dir {}/Frontend 'dev||make up' 'docker||lazydocker'"
+startup_command = "tmux-dev-layout {} --claude-dir {}/Frontend 'dev||make up' 'docker||lazydocker' 'tickets||lazytickets' 'contracts||lazycontracts'"
 
 [[session]]
 name = "gegrond"

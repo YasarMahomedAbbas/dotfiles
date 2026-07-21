@@ -12,8 +12,8 @@ terminal to it. Key 5 (MEDIA) opens the media page; key 6 (WORK) opens the work
 (project launcher) page; key 8 (VPS) opens the VPS page — one key per SSH host,
 each of which opens a fresh ghostty running `ssh <host>`.
 
-Bottom row (keys 10-14): PICK (sesh popup) · THEME (picker page) · REC (screen-
-record toggle) · MIC (mic mute) · MUTE (output mute). REC/MIC/MUTE reflect live
+Bottom row: PICK (sesh popup, key 10) · THEME (picker page, key 11) · MIC (mic
+mute, key 13) · MUTE (output mute, key 14). MIC/MUTE reflect live
 state. MEDIA opens playerctl transport + volume controls; THEME opens a picker
 of the available theme-switch palettes (each key previews its own colours); WORK
 opens a launcher of the configured projects (each key shows its logo/glyph and a
@@ -98,7 +98,7 @@ COLORS = {
     "action": (27, 31, 39),     # action-key background
     "attach": (136, 192, 208),  # frost cyan — attached-session border
     "live":   (163, 190, 140),  # green — a running (but unattached) session
-    "on":     (191, 97, 106),   # active toggle accent (REC/MUTED)
+    "on":     (191, 97, 106),   # active toggle accent (MUTED)
     "text":   (216, 222, 233),
     "textdim": (120, 130, 150),
 }
@@ -282,10 +282,6 @@ def theme_palette(name):
     return pal
 
 
-def recording():
-    return sh("pgrep", "-x", "wf-recorder").returncode == 0
-
-
 def mic_muted():
     return "MUTED" in sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@").stdout
 
@@ -353,11 +349,10 @@ def load_logo(size, filename):
 ACTIONS = {
     10: ("", "PICK",  None,        open_picker),
     11: ("", "THEME", None,        None),  # THEME_KEY -> opens the theme picker page
-    12: ("", "REC",   recording,   lambda: sh("screen-record")),
     13: ("", "MIC",   mic_muted,   lambda: sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle")),
     14: ("", "MUTE",  sink_muted,  lambda: sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")),
 }
-# glyph shown when a toggle is active (muted/recording)
+# glyph shown when a toggle is active (muted)
 ACTIVE_GLYPH = {13: "", 14: ""}  # mic-slash, volume-off
 
 WORK_GLYPH = "\uf0b1"   # briefcase — main-page key that opens the work page
