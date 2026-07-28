@@ -73,6 +73,8 @@ render starship.toml.tmpl        starship.toml
 render fzf.fish.tmpl             fzf.fish
 render sesh-colors.sh.tmpl       sesh-colors.sh
 render quickshell-colors.json.tmpl quickshell-colors.json
+render pi-theme.json.tmpl       pi-theme.json
+render nvim-colors.lua.tmpl     nvim-colors.lua
 
 echo "$theme" > "$OUT/active"
 echo "→ rendered '$theme' into $OUT"

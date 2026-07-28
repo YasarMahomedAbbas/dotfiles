@@ -1,3 +1,7 @@
+-- Colors come from the active `theme-switch` palette rather than fixed hexes,
+-- which were VS Code's teal/yellow and stayed put under every other theme.
+local palette = require("config.palette").get()
+
 return {
   "nvim-lualine/lualine.nvim",
   opts = function(_, opts)
@@ -13,8 +17,8 @@ return {
 
     table.insert(opts.sections.lualine_b, 1, {
       git_repo,
-      color = { fg = "#4EC9B0", gui = "bold" },
-      icon = { "", color = { fg = "#4EC9B0" } },
+      color = { fg = palette.teal, gui = "bold" },
+      icon = { "", color = { fg = palette.teal } },
     })
 
     -- Style the branch component yellow
@@ -22,8 +26,8 @@ return {
       if component == "branch" or (type(component) == "table" and component[1] == "branch") then
         opts.sections.lualine_b[i] = {
           "branch",
-          color = { fg = "#DCDCAA", gui = "bold" },
-          icon = { "", color = { fg = "#DCDCAA" } },
+          color = { fg = palette.yellow, gui = "bold" },
+          icon = { "", color = { fg = palette.yellow } },
         }
         break
       end

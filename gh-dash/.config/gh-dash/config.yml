@@ -1,4 +1,6 @@
 prSections:
+    - title: All Open
+      filters: is:open sort:updated
     - title: My Pull Requests
       filters: is:open author:@me
     - title: Needs My Review
