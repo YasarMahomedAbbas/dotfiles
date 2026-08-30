@@ -1,0 +1,978 @@
+#!/bin/bash
+# wt-dev — one live worktree per project, and always know which one.
+#
+# The problem: every git worktree of a project wants the same host ports. Running
+# two at once either fails to bind or — worse — silently pairs one worktree's
+# frontend with another worktree's backend, because a browser-facing API URL like
+# http://localhost:5032 is a fact about the HOST, not about the stack that owns it.
+#
+# The answer here is deliberately NOT parallelism. Exactly one worktree per project
+# is live at a time; switching is one command; what's live is always visible (the
+# status command, the tmux pill, the fzf popup).
+#
+#   wt-dev use [<tree>]      make a worktree live and start it  (default: cwd's tree)
+#   wt-dev up                start the current worktree         (= use .)
+#   wt-dev down [<proj>]     stop a project's stack
+#   wt-dev restart [<proj>]  recreate the live stack in place
+#   wt-dev status [--short]  the cross-project view (--short: one line per project, live tree named)
+#   wt-dev pick              fzf switcher (tmux prefix + w)
+#   wt-dev tmux              the tmux status-line pill (machine output)
+#   wt-dev logs [<svc>]      follow the live stack's logs
+#   wt-dev compose -- ARGS   docker compose against the live tree
+#   wt-dev doctor            who holds the declared ports right now
+#   wt-dev ls                registered projects
+#
+# Flags for `use`/`up`:
+#   --db NAME    override the database (compose projects declaring db_var)
+#   --db auto    derive one from the worktree name, e.g. TravelSmart_issue510
+#   --build      force an image rebuild / setup run
+#   --wait       hold the terminal until the stack is up (default: start detached)
+#   --no-wait    the default, stated explicitly
+#
+# A project opts in with a .wtdev.toml at its repo root. Flat key = value only;
+# arrays on one line; whole-line # comments:
+#
+#   name    = "travel-smart"     # project id (state file, compose -p)
+#   short   = "ts"               # label for the tmux pill
+#   runner  = "compose"          # compose | process
+#   notify  = true               # desktop notification when the stack lands (default: true)
+#   ports   = [5173, 5032, 1433] # host ports this project claims
+#   # --- compose runner ---
+#   compose_file     = "docker-compose.yml"
+#   urls             = ["frontend=http://localhost:5173", "backend=http://localhost:5032"]
+#   env_file         = ".env"                    # falls back to the main checkout's copy
+#   require_files    = ["Frontend/.env"]         # warn (don't fail) when a tree lacks these
+#   fingerprint      = ["Frontend/package-lock.json", "Backend/Dockerfile"]
+#   volatile_volumes = [frontend_node_modules]   # dropped when the fingerprint changes
+#   db_var           = "TS_DB"                   # env var carrying the database name
+#   db_default       = "TravelSmart"
+#   # --- process runner ---
+#   cmd     = "npm run dev"
+#   setup   = "npm install && npm run build"     # re-run when the fingerprint changes
+#
+# State: ~/.local/state/wt-dev/<name>.state   Registry: ~/.config/wt-dev/projects
+
+set -uo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/wt-dev"
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/wt-dev"
+REGISTRY="$CONF_DIR/projects"
+mkdir -p "$STATE_DIR" "$CONF_DIR"
+
+# ---- colours ---------------------------------------------------------------
+# Rendered by theme-switch from the active palette; the fallbacks are dark-nord so
+# wt-dev still looks right on a machine that has never run theme-switch.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/wt-dev-colors.sh" ] && . "$HOME/.config/theme/wt-dev-colors.sh"
+: "${WT_OK:=#a3be8c}"; : "${WT_WARN:=#ebcb8b}"; : "${WT_ERR:=#bf616a}"
+: "${WT_ACCENT:=#88c0d0}"; : "${WT_FG:=#d8dee9}"; : "${WT_MUTED:=#6c7a96}"
+: "${WT_PILL_BG:=#29303c}"
+
+hex2fg() { local h="${1#\#}"; printf '\033[38;2;%d;%d;%dm' "$((16#${h:0:2}))" "$((16#${h:2:2}))" "$((16#${h:4:2}))"; }
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_OK="$(hex2fg "$WT_OK")"; C_WARN="$(hex2fg "$WT_WARN")"; C_ERR="$(hex2fg "$WT_ERR")"
+  C_ACC="$(hex2fg "$WT_ACCENT")"; C_FG="$(hex2fg "$WT_FG")"; C_DIM="$(hex2fg "$WT_MUTED")"
+  C_B=$'\033[1m'; C_R=$'\033[0m'
+else
+  C_OK=""; C_WARN=""; C_ERR=""; C_ACC=""; C_FG=""; C_DIM=""; C_B=""; C_R=""
+fi
+
+die()  { printf '%swt-dev:%s %s\n' "$C_ERR" "$C_R" "$*" >&2; exit 1; }
+warn() { printf '%s  ! %s%s\n' "$C_WARN" "$*" "$C_R" >&2; }
+info() { printf '%s  · %s%s\n' "$C_DIM" "$*" "$C_R"; }
+step() { printf '%s  → %s%s\n' "$C_ACC" "$*" "$C_R"; }
+good() { printf '%s  ✓ %s%s\n' "$C_OK" "$*" "$C_R"; }
+
+# A switch runs detached, so by the time the stack lands the terminal that started
+# it has moved on and the tmux pill is the only signal — easy to miss from another
+# window. Best effort in every direction: no daemon, no session bus, or a project
+# that sets `notify = false` is not an error, and must never fail the start.
+notify() {
+  local urgency="$1" title="$2" body="$3"
+  [ "$(cfg notify true)" = "false" ] && return 0
+  command -v notify-send >/dev/null 2>&1 || return 0
+  # Stack-tag so a switch replaces the previous switch's notification rather than
+  # queueing behind it; mako and dunst both honour this hint.
+  notify-send --app-name=wt-dev --urgency="$urgency" \
+    --hint="string:x-dunst-stack-tag:wt-dev-${PROJ:-x}" \
+    "$title" "$body" >/dev/null 2>&1 || true
+}
+
+# The pill is served from a 5s file cache, so refreshing the status line without
+# dropping it can redraw the OLD colour and then sit on it until the next
+# status-interval tick. Every phase change goes through here.
+pill_refresh() { rm -f "$STATE_DIR/pill"; tmux refresh-client -S 2>/dev/null; }
+
+# ---- .wtdev.toml -----------------------------------------------------------
+# A deliberately tiny parser: flat `key = value`, one-line arrays, whole-line
+# comments. It never sources the file — a repo config arrives from a branch, and
+# `source`ing that would make checking out a branch enough to run code.
+CFG_KEYS=""
+cfg_load() {
+  local file="$1" line key val
+  for key in $CFG_KEYS; do unset "CFG_$key"; done
+  CFG_KEYS=""
+  [ -r "$file" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    val="${val%"${val##*[![:space:]]}"}"
+    if [[ "$val" == \[*\]* ]]; then
+      val="${val#[}"; val="${val%%]*}"; val="${val//,/ }"; val="${val//\"/}"; val="${val//\'/}"
+      local -a parts; read -r -a parts <<< "$val"; val="${parts[*]}"
+    else
+      [[ "$val" == \"*\" ]] && { val="${val#\"}"; val="${val%\"}"; }
+      [[ "$val" == \'*\' ]] && { val="${val#\'}"; val="${val%\'}"; }
+    fi
+    printf -v "CFG_$key" '%s' "$val"
+    CFG_KEYS="$CFG_KEYS $key"
+  done < "$file"
+  return 0
+}
+cfg() { local v="CFG_$1"; printf '%s' "${!v:-${2:-}}"; }
+
+# ---- git / project resolution ----------------------------------------------
+# git-common-dir points at the MAIN checkout's .git from inside any worktree, so
+# this resolves the same root whether you are in the repo or one of its trees.
+main_root() {
+  local d="${1:-$PWD}" common
+  common="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  printf '%s' "$(dirname "$common")"
+}
+tree_branch() { git -C "$1" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$1" rev-parse --short HEAD 2>/dev/null; }
+worktrees()   { git -C "$1" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p'; }
+
+# Load the config for the repo containing $1, and export MAIN/PROJ.
+load_project() {
+  local from="${1:-$PWD}"
+  MAIN="$(main_root "$from")" || return 1
+  [ -r "$MAIN/.wtdev.toml" ] || return 1
+  cfg_load "$MAIN/.wtdev.toml" || return 1
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  return 0
+}
+
+registry_add()  { grep -qxF "$1" "$REGISTRY" 2>/dev/null || printf '%s\n' "$1" >> "$REGISTRY"; }
+registry_list() { [ -f "$REGISTRY" ] && grep -v '^[[:space:]]*$' "$REGISTRY" | while read -r p; do [ -r "$p/.wtdev.toml" ] && printf '%s\n' "$p"; done; }
+
+# ---- state -----------------------------------------------------------------
+sfile() { printf '%s/%s.state' "$STATE_DIR" "$1"; }
+sget()  { local f; f="$(sfile "$1")"; [ -f "$f" ] || return 1; sed -n "s/^$2=//p" "$f" | head -1; }
+sset()  { local f; f="$(sfile "$1")"; shift; : > "$f"; printf '%s\n' "$@" >> "$f"; }
+sclear(){ rm -f "$(sfile "$1")" "$STATE_DIR/pill"; }
+# Update one key without rewriting the rest — the background starter edits `phase`
+# while the foreground has already written everything else.
+sput()  {
+  local f k v tmp; f="$(sfile "$1")"; k="$2"; v="$3"; tmp="$f.tmp"
+  { [ -f "$f" ] && grep -v "^$k=" "$f"; printf '%s=%s\n' "$k" "$v"; } > "$tmp"
+  mv "$tmp" "$f"; rm -f "$STATE_DIR/pill"
+}
+
+# ---- fingerprint -----------------------------------------------------------
+# Hashes the files a switch can invalidate (lockfiles, Dockerfiles, csproj). When
+# it moves, the image/node_modules from the previous tree are stale — which is the
+# other half of the mismatch problem, and just as silent.
+fingerprint() {
+  local tree="$1" pats; pats="$(cfg fingerprint)"
+  [ -z "$pats" ] && { printf 'none'; return; }
+  ( cd "$tree" 2>/dev/null || exit 0
+    # shellcheck disable=SC2086
+    for f in $pats; do [ -e "$f" ] && cat "$f"; done | sha256sum | cut -c1-16 )
+}
+
+# What each tree was last prepared at, for runners whose build output lives
+# inside the tree rather than in a volume shared across them.
+tfile() { printf '%s/%s.trees' "$STATE_DIR" "$1"; }
+tree_fp_get() { local f; f="$(tfile "$1")"; [ -f "$f" ] || return 1; awk -F'\t' -v t="$2" '$2==t{print $1; found=1} END{exit !found}' "$f"; }
+tree_fp_set() {
+  local f tmp; f="$(tfile "$1")"; tmp="$f.tmp"
+  { [ -f "$f" ] && awk -F'\t' -v t="$3" '$2!=t' "$f"; printf '%s\t%s\n' "$2" "$3"; } > "$tmp"
+  mv "$tmp" "$f"
+}
+
+# ---- port ownership --------------------------------------------------------
+# Docker first: a published port also shows up in `ss` as docker-proxy, which
+# names the proxy rather than the container that actually owns the port.
+port_holder() {
+  local port="$1" cid proj name out pid comm
+  cid="$(docker ps --format '{{.ID}} {{.Ports}}' 2>/dev/null | awk -v p=":$port->" 'index($0,p){print $1; exit}')"
+  if [ -n "$cid" ]; then
+    proj="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$cid" 2>/dev/null)"
+    name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null)"; name="${name#/}"
+    printf 'docker|%s|%s' "${proj:-<none>}" "${name:-$cid}"; return 0
+  fi
+  out="$(ss -ltnpH "sport = :$port" 2>/dev/null | head -1)"
+  [ -z "$out" ] && return 1
+  pid="$(sed -n 's/.*pid=\([0-9]*\).*/\1/p' <<< "$out")"
+  comm="$(sed -n 's/.*users:((\"\([^\"]*\)\".*/\1/p' <<< "$out")"
+  printf 'proc|%s|%s' "${comm:-unknown}" "${pid:-?}"
+}
+
+# Refuse to start when something that is NOT this project holds a declared port.
+# This is the guardrail: today that collision starts a half-stack and you find out
+# via a frontend quietly talking to the wrong branch's backend.
+preflight_ports() {
+  local proj="$1" p holder kind owner detail conflicts=0
+  for p in $(cfg ports); do
+    holder="$(port_holder "$p")" || continue
+    IFS='|' read -r kind owner detail <<< "$holder"
+    [ "$kind" = "docker" ] && [ "$owner" = "$proj" ] && continue
+    [ "$kind" = "proc" ] && [ "$detail" = "$(sget "$proj" pid 2>/dev/null)" ] && continue
+    conflicts=$((conflicts + 1))
+    if [ "$kind" = "docker" ]; then
+      warn "port $p is held by compose project '$owner' ($detail)"
+    else
+      warn "port $p is held by $owner (pid $detail)"
+    fi
+  done
+  [ "$conflicts" -eq 0 ] && return 0
+  printf '\n%s  %d port conflict(s). Free them first — `wt-dev doctor` names every holder.%s\n\n' "$C_ERR" "$conflicts" "$C_R" >&2
+  return 1
+}
+
+# ---- compose runner --------------------------------------------------------
+# The whole trick of "one live worktree" lives in these three flags: the project
+# name is PINNED (so there is only ever one stack), while -f/--project-directory
+# point at whichever tree is live. Compose sees a changed config and recreates in
+# place, so switching trees is a recreate, not a second stack. Relative bind
+# mounts in the compose file resolve against the tree, so no compose edits are
+# needed to make the source follow you.
+compose_cmd() {
+  # Acts on the project named by PROJ, rooted at MAIN. Both are set by whichever
+  # command loop is running; `:?` turns a caller that forgot into a named error
+  # instead of a silently-empty result.
+  : "${PROJ:?compose_cmd: PROJ is not set}" "${MAIN:?compose_cmd: MAIN is not set}"
+  local tree="$1"; shift
+  local -a args=(compose -p "$PROJ" --project-directory "$tree" -f "$tree/$(cfg compose_file docker-compose.yml)")
+  local ef envf; envf="$(cfg env_file)"
+  if [ -n "$envf" ]; then
+    if   [ -f "$tree/$envf" ]; then ef="$tree/$envf"
+    elif [ -f "$MAIN/$envf" ]; then ef="$MAIN/$envf"
+    fi
+    [ -n "${ef:-}" ] && args+=(--env-file "$ef")
+  fi
+  docker "${args[@]}" "$@"
+}
+
+# svc|state|health|published-ports
+#
+# Pipe-separated, not TSV: a service with no healthcheck reports an empty Health,
+# and `read` treats a run of TAB (an IFS whitespace character) as ONE delimiter —
+# so the empty field vanishes and the ports land in the health column.
+compose_ps() {
+  compose_cmd "$1" ps -a --format json 2>/dev/null | jq -r '
+    (if type=="array" then .[] else . end)
+    | [ .Service, .State, (.Health // ""),
+        ([.Publishers[]? | select(.PublishedPort > 0) | .PublishedPort] | unique | map(tostring) | join(",")) ]
+    | join("|")' 2>/dev/null
+}
+
+compose_services() { compose_cmd "$1" config --services 2>/dev/null; }
+
+# Tri-state, because "not yet" and "never" want very different waits:
+#
+#   0  every service the tree DECLARES exists, is running, and is neither starting
+#      nor unhealthy.
+#   1  not there yet — still building, booting, or not created.
+#   2  it never will be: something is unhealthy or has exited. Sitting out the rest
+#      of the timeout only delays the bad news.
+#
+# The doomed case used to be caught for free: the frontend declared
+# `depends_on: backend: service_healthy`, so `up -d` itself errored with "dependency
+# failed to start" once the backend went unhealthy. That condition is gone (the two
+# now start together), so nothing but this check stands between a broken backend and
+# the full 600s timeout.
+#
+# Checking only the containers that exist is not enough either: a service blocked on
+# a dependency's health is not created at all, so a stack would read as settled while
+# the service you actually care about is still missing.
+compose_settled() {
+  local tree="$1" svc state health rest present="" want doomed=0 pending=0
+  while IFS='|' read -r svc state health rest; do
+    [ -z "$svc" ] && continue
+    case "$health" in
+      unhealthy) doomed=1; continue ;;
+      starting)  pending=1 ;;
+    esac
+    case "$state" in
+      running)               ;;
+      created|restarting)    pending=1 ;;
+      # exited, dead, paused — `dotnet watch` keeps its container up after a crash,
+      # so this catches the runners that do not, not the backend.
+      *)                     doomed=1; continue ;;
+    esac
+    present="$present $svc"
+  done < <(compose_ps "$tree")
+  [ "$doomed" = 1 ] && return 2
+  [ -z "$present" ] && return 1
+  [ "$pending" = 1 ] && return 1
+  while read -r want; do
+    [ -z "$want" ] && continue
+    case " $present " in *" $want "*) ;; *) return 1 ;; esac
+  done < <(compose_services "$tree")
+  return 0
+}
+
+start_compose() {
+  local tree="$1" rebuild="$2" vol
+  if [ "$rebuild" = 1 ]; then
+    step "dependency fingerprint changed — rebuilding"
+    compose_cmd "$tree" down --remove-orphans >/dev/null 2>&1
+    for vol in $(cfg volatile_volumes); do
+      docker volume rm "${PROJ}_${vol}" >/dev/null 2>&1 && info "dropped volume ${PROJ}_${vol}"
+    done
+    compose_cmd "$tree" up -d --build --remove-orphans
+  else
+    compose_cmd "$tree" up -d --remove-orphans
+  fi
+}
+
+stop_compose() { compose_cmd "$1" down --remove-orphans; }
+
+# ---- process runner --------------------------------------------------------
+# Started in its own session so the whole tree of children dies with one signal —
+# `npm run dev` spawns a compiler and a server, and killing only the npm shim
+# leaves the real port holder alive, which is its own version of "lost track".
+plog() { printf '%s/%s.log' "$STATE_DIR" "$1"; }
+
+start_process() {
+  local tree="$1" rebuild="$2" log pid pgid setup
+  log="$(plog "$PROJ")"
+  setup="$(cfg setup)"
+  if [ "$rebuild" = 1 ] && [ -n "$setup" ]; then
+    step "fingerprint changed — running setup: $setup"
+    ( cd "$tree" && eval "$setup" ) || warn "setup failed; starting anyway so the log shows why"
+  fi
+  step "starting: $(cfg cmd)"
+  setsid bash -c "cd '$tree' && exec $(cfg cmd)" < /dev/null > "$log" 2>&1 &
+  pid=$!
+  disown 2>/dev/null
+  sleep 0.4
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+  PROC_PID="$pid"; PROC_PGID="${pgid:-$pid}"
+  info "log: $log"
+}
+
+stop_process() {
+  local pgid pid
+  pgid="$(sget "$PROJ" pgid)"; pid="$(sget "$PROJ" pid)"
+  [ -n "$pgid" ] && kill -TERM -- "-$pgid" 2>/dev/null
+  [ -n "$pid" ]  && kill -TERM "$pid" 2>/dev/null
+  sleep 0.5
+  [ -n "$pgid" ] && kill -KILL -- "-$pgid" 2>/dev/null
+  return 0
+}
+
+process_alive() { local pid; pid="$(sget "$1" pid)"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+
+# ---- adoption --------------------------------------------------------------
+# A stack started by plain `docker compose` (or by a previous shell, or before
+# wt-dev existed) still carries the tree it was built from in its own labels.
+# Reading it back means wt-dev reports what is actually running rather than
+# "stopped", which is the exact failure mode it exists to prevent.
+compose_infer_tree() {
+  local cid f
+  cid="$(docker ps -q --filter "label=com.docker.compose.project=$1" 2>/dev/null | head -1)"
+  [ -z "$cid" ] && return 1
+  f="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$cid" 2>/dev/null)"
+  [ -z "$f" ] && return 1
+  dirname "${f%%,*}"
+}
+
+container_started() {
+  local cid t
+  cid="$(docker ps -q --filter "label=com.docker.compose.project=$1" 2>/dev/null | head -1)"
+  [ -z "$cid" ] && return 1
+  t="$(docker inspect -f '{{.State.StartedAt}}' "$cid" 2>/dev/null)" || return 1
+  date -d "$t" +%s 2>/dev/null
+}
+
+# The live tree for a project: what wt-dev recorded, or — failing that — what the
+# running containers say. Adopting writes the state file so down/logs/compose all
+# target the right tree afterwards.
+resolve_live_tree() {
+  local proj="$1" tree
+  tree="$(sget "$proj" tree)"
+  [ -n "$tree" ] && [ -d "$tree" ] && { printf '%s' "$tree"; return 0; }
+  [ "$(cfg runner compose)" = "compose" ] || return 1
+  tree="$(compose_infer_tree "$proj")" || return 1
+  [ -d "$tree" ] || return 1
+  sset "$proj" "tree=$tree" "branch=$(tree_branch "$tree")" "db=$(cfg db_default)" \
+       "fingerprint=$(fingerprint "$tree")" "started=$(container_started "$proj")" \
+       "runner=compose" "adopted=1"
+  printf '%s' "$tree"
+}
+
+# ---- shared: is this project live? ----------------------------------------
+project_live() {
+  local proj="$1" tree; tree="$(resolve_live_tree "$proj")" || return 1
+  [ -n "$tree" ] || return 1
+  if [ "$(cfg runner compose)" = "compose" ]; then
+    [ -n "$(compose_ps "$tree")" ] || return 1
+  else
+    process_alive "$proj" || return 1
+  fi
+}
+
+human_since() {
+  local then="$1" now d
+  [ -z "$then" ] && { printf '?'; return; }
+  now="$(date +%s)"; d=$(( now - then ))
+  if   [ "$d" -lt 60 ]    ; then printf '%ds' "$d"
+  elif [ "$d" -lt 3600 ]  ; then printf '%dm' "$(( d / 60 ))"
+  elif [ "$d" -lt 86400 ] ; then printf '%dh%dm' "$(( d / 3600 ))" "$(( d % 3600 / 60 ))"
+  else printf '%dd' "$(( d / 86400 ))"; fi
+}
+
+wait_settled() {
+  local tree="$1" timeout="${2:-240}" start elapsed rc
+  local tty=0; [ -t 1 ] && tty=1
+  start="$(date +%s)"
+  [ "$tty" = 1 ] && printf '%s  waiting for services…%s' "$C_DIM" "$C_R"
+  while :; do
+    compose_settled "$tree"; rc=$?
+    [ "$rc" = 0 ] && { [ "$tty" = 1 ] && printf '\r\033[K'; return 0; }
+    # 2 = doomed. Fail now rather than at the timeout.
+    [ "$rc" = 2 ] && { [ "$tty" = 1 ] && printf '\r\033[K'; return 1; }
+    elapsed=$(( $(date +%s) - start ))
+    [ "$elapsed" -ge "$timeout" ] && { [ "$tty" = 1 ] && printf '\r\033[K'; return 1; }
+    # The progress line is a carriage-return redraw; in the background starter it
+    # would just fill the log with fragments.
+    [ "$tty" = 1 ] && printf '\r%s  waiting for services… %ds%s' "$C_DIM" "$elapsed" "$C_R"
+    sleep 2
+  done
+}
+
+# ---- rendering -------------------------------------------------------------
+term_cols() { local c; c="$(tput cols 2>/dev/null)"; [ -n "$c" ] && [ "$c" -gt 20 ] || c=80; [ "$c" -gt 92 ] && c=92; printf '%s' "$c"; }
+tildify()   { local p="$1"; printf '%s' "${p/#$HOME/\~}"; }
+rule()      { local w; w="$(term_cols)"; printf '%s  ' "$C_DIM"; printf '─%.0s' $(seq 1 $(( w - 4 ))); printf '%s\n' "$C_R"; }
+
+# "<glyph><TAB><colour>" for a compose state/health pair
+svc_glyph() {
+  case "$2" in
+    starting)  printf '◐\t%s' "$C_WARN"; return ;;
+    unhealthy) printf '✗\t%s' "$C_ERR";  return ;;
+  esac
+  case "$1" in
+    running)    printf '●\t%s' "$C_OK" ;;
+    restarting) printf '◐\t%s' "$C_WARN" ;;
+    *)          printf '✗\t%s' "$C_ERR" ;;
+  esac
+}
+
+svc_url() {
+  local svc="$1" e
+  for e in $(cfg urls); do
+    [ "${e%%=*}" = "$svc" ] && { printf '%s' "${e#*=}"; return; }
+  done
+}
+
+# Header line with a right-aligned state badge.
+proj_header() {
+  local name="$1" glyph="$2" text="$3" colour="$4" w pad
+  w="$(term_cols)"
+  # glyph + space = 2 display columns regardless of how many bytes it encodes to
+  pad=$(( w - 4 - ${#name} - ${#text} - 2 ))
+  [ "$pad" -lt 1 ] && pad=1
+  printf '  %s%s%s%*s%s%s %s%s\n' "$C_B$C_FG" "$name" "$C_R" "$pad" "" "$colour" "$glyph" "$text" "$C_R"
+}
+
+render_project() {
+  local main="$1" short="${2:-0}"
+  MAIN="$main"; cfg_load "$main/.wtdev.toml" || return 0
+  PROJ="$(cfg name "$(basename "$main")")"
+  local runner tree branch db started live=0
+  runner="$(cfg runner compose)"
+  tree="$(resolve_live_tree "$PROJ")"
+  [ -n "$tree" ] && [ -d "$tree" ] && project_live "$PROJ" && live=1
+
+  local phase; phase="$(sget "$PROJ" phase)"
+  case "$phase" in
+    starting) proj_header "$PROJ" "◐" "starting" "$C_WARN"; live=1 ;;
+    failed)   proj_header "$PROJ" "✗" "failed"   "$C_ERR";  live=1 ;;
+    *) if [ "$live" = 1 ]; then
+         # --short has no body, so name the live tree on the header line itself
+         local label="live"
+         [ "$short" = 1 ] && label="live  $(basename "$tree")  $(tree_branch "$tree")"
+         proj_header "$PROJ" "●" "$label" "$C_OK"
+       else proj_header "$PROJ" "○" "stopped" "$C_DIM"; fi ;;
+  esac
+  [ "$short" = 1 ] && return 0
+  rule
+
+  if [ "$live" = 1 ]; then
+    branch="$(tree_branch "$tree")"; db="$(sget "$PROJ" db)"; started="$(sget "$PROJ" started)"
+    printf '   %s%-9s%s %s%s%s  %s%s%s\n' "$C_DIM" "worktree" "$C_R" "$C_ACC" "$(basename "$tree")" "$C_R" "$C_FG" "$branch" "$C_R"
+    printf '   %s%-9s%s %s\n' "$C_DIM" "path" "$C_R" "$C_DIM$(tildify "$tree")$C_R"
+    [ -n "$db" ] && printf '   %s%-9s%s %s\n' "$C_DIM" "database" "$C_R" "$C_FG$db$C_R"
+    printf '   %s%-9s%s %s\n' "$C_DIM" "up" "$C_R" "$C_FG$(human_since "$started")$C_R"
+    case "$phase" in
+      starting) printf '   %s%-9s%s %s\n' "$C_DIM" "output" "$C_R" "$C_DIM$(tildify "$(plog "$PROJ")")$C_R" ;;
+      failed)   printf '   %s%-9s%s %s\n' "$C_DIM" "output" "$C_R" "$C_ERR$(tildify "$(plog "$PROJ")")$C_R" ;;
+    esac
+    printf '\n'
+    if [ "$runner" = "compose" ]; then
+      local svc state health ports glyph colour url present="" pub="" p
+      while IFS='|' read -r svc state health ports; do
+        [ -z "$svc" ] && continue
+        IFS=$'\t' read -r glyph colour <<< "$(svc_glyph "$state" "$health")"
+        url="$(svc_url "$svc")"; [ -z "$url" ] && [ -n "$ports" ] && url=":$ports"
+        printf '   %s%s%s %s%-10s%s %s%-10s%s %s%s%s\n' \
+          "$colour" "$glyph" "$C_R" "$C_FG" "$svc" "$C_R" \
+          "$C_DIM" "${health:-$state}" "$C_R" "$C_ACC" "$url" "$C_R"
+        present="$present $svc"; pub="$pub $ports"
+      done < <(compose_ps "$tree")
+      # Declared but not created — usually still blocked on a dependency's health.
+      while read -r svc; do
+        [ -z "$svc" ] && continue
+        case " $present " in *" $svc "*) continue ;; esac
+        printf '   %s✗%s %s%-10s%s %s%s%s\n' "$C_ERR" "$C_R" "$C_FG" "$svc" "$C_R" \
+          "$C_DIM" "declared but not created" "$C_R"
+      done < <(compose_services "$tree")
+      # A port .wtdev.toml claims that nothing in THIS tree publishes. Branches differ
+      # in which services they define, so "live" does not imply every usual URL answers.
+      for p in $(cfg ports); do
+        case ",${pub// /,}," in *",$p,"*) continue ;; esac
+        printf '   %s!%s %s%-10s%s %s%s%s\n' "$C_WARN" "$C_R" "$C_FG" ":$p" "$C_R" \
+          "$C_WARN" "no service in this tree publishes it" "$C_R"
+      done
+    else
+      local pid port
+      pid="$(sget "$PROJ" pid)"
+      printf '   %s●%s %s%-10s%s %s%-12s%s %s%s%s\n' "$C_OK" "$C_R" "$C_FG" "$(cfg name)" "$C_R" \
+        "$C_DIM" "pid $pid" "$C_R" "$C_ACC" "$(svc_url "$(cfg name)")" "$C_R"
+      for port in $(cfg ports); do
+        if port_holder "$port" >/dev/null; then
+          printf '   %s●%s %s%-10s%s %s%s%s\n' "$C_OK" "$C_R" "$C_FG" "port $port" "$C_R" "$C_DIM" "listening" "$C_R"
+        else
+          printf '   %s◐%s %s%-10s%s %s%s%s\n' "$C_WARN" "$C_R" "$C_FG" "port $port" "$C_R" "$C_DIM" "not listening yet" "$C_R"
+        fi
+      done
+    fi
+    printf '\n'
+  fi
+
+  # Every other worktree, so "what else could I switch to" is never a git command away.
+  local wt first=1
+  while read -r wt; do
+    [ -z "$wt" ] && continue
+    [ "$live" = 1 ] && [ "$wt" = "$tree" ] && continue
+    [ "$first" = 1 ] && { printf '   %s%s%s\n' "$C_DIM" "dormant" "$C_R"; first=0; }
+    printf '     %s○ %-14s%s %s%s%s\n' "$C_DIM" "$(basename "$wt")" "$C_R" "$C_DIM" "$(tree_branch "$wt")" "$C_R"
+  done < <(worktrees "$main")
+
+  # Foreign port holders — the other half of "I lost track of what's running".
+  local p holder kind owner detail shown=0
+  for p in $(cfg ports); do
+    holder="$(port_holder "$p")" || continue
+    IFS='|' read -r kind owner detail <<< "$holder"
+    [ "$kind" = "docker" ] && [ "$owner" = "$PROJ" ] && continue
+    [ "$kind" = "proc" ] && [ "$live" = 1 ] && continue
+    [ "$shown" = 0 ] && { printf '\n   %s%s%s\n' "$C_WARN" "port conflicts" "$C_R"; shown=1; }
+    if [ "$kind" = "docker" ]; then
+      printf '     %s✗ %-6s%s held by compose project %s%s%s (%s)\n' "$C_ERR" ":$p" "$C_R" "$C_WARN" "$owner" "$C_R" "$detail"
+    else
+      printf '     %s✗ %-6s%s held by %s%s%s (pid %s)\n' "$C_ERR" ":$p" "$C_R" "$C_WARN" "$owner" "$C_R" "$detail"
+    fi
+  done
+  printf '\n'
+}
+
+cmd_status() {
+  local short=0; [ "${1:-}" = "--short" ] && short=1
+  local main any=0
+  printf '\n'
+  while read -r main; do
+    any=1; render_project "$main" "$short"
+  done < <(registry_list)
+  if [ "$any" = 0 ]; then
+    info "no projects registered yet — run \`wt-dev use\` inside a repo with a .wtdev.toml"
+    printf '\n'
+  fi
+}
+
+# ---- commands --------------------------------------------------------------
+resolve_tree() {
+  local spec="${1:-}" wt
+  if [ -z "$spec" ] || [ "$spec" = "." ]; then
+    git -C "$PWD" rev-parse --show-toplevel 2>/dev/null; return
+  fi
+  [ -d "$spec" ] && { realpath "$spec"; return; }
+  while read -r wt; do
+    [ "$(basename "$wt")" = "$spec" ] && { printf '%s' "$wt"; return; }
+  done < <(worktrees "$MAIN")
+  while read -r wt; do
+    case "$(tree_branch "$wt")" in *"$spec"*) printf '%s' "$wt"; return ;; esac
+  done < <(worktrees "$MAIN")
+  return 1
+}
+
+find_main_by_name() {
+  local want="$1" main
+  while read -r main; do
+    cfg_load "$main/.wtdev.toml" || continue
+    [ "$(cfg name "$(basename "$main")")" = "$want" ] && { printf '%s' "$main"; return 0; }
+  done < <(registry_list)
+  return 1
+}
+
+cmd_use() {
+  local spec="" db="" build=0 dowait=0 a
+  while [ $# -gt 0 ]; do
+    a="$1"
+    case "$a" in
+      --db)      db="${2:-}"; shift 2 ;;
+      --db=*)    db="${a#*=}"; shift ;;
+      --build)   build=1; shift ;;
+      --wait)    dowait=1; shift ;;
+      --no-wait) dowait=0; shift ;;
+      -*)        die "unknown flag: $a" ;;
+      *)         spec="$a"; shift ;;
+    esac
+  done
+
+  load_project "$PWD" || die "no .wtdev.toml at this repo's root (looked from $PWD)"
+  local tree; tree="$(resolve_tree "$spec")" || die "no worktree matching '$spec'"
+  [ -d "$tree" ] || die "not a directory: $tree"
+  # Re-read the config from the TARGET tree: a branch is allowed to change its own
+  # ports or services, and the tree we are about to run is the authority on that.
+  [ -r "$tree/.wtdev.toml" ] && cfg_load "$tree/.wtdev.toml"
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  registry_add "$MAIN"
+
+  local runner; runner="$(cfg runner compose)"
+  printf '\n'
+  step "$PROJ → $(basename "$tree")  ($(tree_branch "$tree"))"
+
+  preflight_ports "$PROJ" || exit 1
+
+  local f
+  for f in $(cfg require_files); do
+    [ -e "$tree/$f" ] || warn "$f is missing in this tree — copy it from $(tildify "$MAIN")"
+  done
+
+  local db_var; db_var="$(cfg db_var)"
+  if [ -n "$db_var" ]; then
+    if [ "$db" = "auto" ]; then
+      db="$(cfg db_default)_$(basename "$tree" | tr -cd '[:alnum:]')"
+    elif [ -z "$db" ]; then
+      db="$(sget "$PROJ" db)"; [ -z "$db" ] && db="$(cfg db_default)"
+    fi
+    export "$db_var=$db"
+    info "database: $db"
+  fi
+
+  # The two runners ask different staleness questions. Compose shares ONE named
+  # volume across every tree, so what matters is the tree that was live before.
+  # A process runner builds into node_modules/dist INSIDE each tree, so what
+  # matters is whether THIS tree has ever been prepared.
+  local fp prev rebuild=0
+  fp="$(fingerprint "$tree")"
+  if [ "$runner" = "compose" ]; then
+    prev="$(sget "$PROJ" fingerprint)"
+    [ -n "$prev" ] && [ "$prev" != "$fp" ] && rebuild=1
+  else
+    prev="$(tree_fp_get "$PROJ" "$tree")" || prev=""
+    [ "$prev" != "$fp" ] && rebuild=1
+  fi
+  [ "$build" = 1 ] && rebuild=1
+
+  # Written BEFORE anything starts, so `status` and the tmux pill name the tree you
+  # just asked for while it is still compiling — rather than the one it replaced.
+  sset "$PROJ" "tree=$tree" "branch=$(tree_branch "$tree")" "db=${db:-}" \
+       "fingerprint=$fp" "started=$(date +%s)" "runner=$runner" \
+       "phase=starting" "pid=" "pgid="
+
+  if [ "$dowait" = 1 ]; then
+    run_start "$tree" "$rebuild" "$fp" || exit 1
+    printf '\n'
+    render_project "$MAIN"
+  else
+    # Detached by default. `dotnet watch` recompiles from scratch on every switch
+    # (the source tree it is mounted on changed underneath it), and compose's own
+    # `up -d` blocks until a depends_on: service_healthy dependency reports healthy
+    # — together that is minutes of a held terminal. Everything that can fail fast
+    # already ran synchronously above; the slow part's output goes to the log.
+    : > "$(plog "$PROJ")"
+    setsid "$SELF" __start "$tree" "$rebuild" "$fp" < /dev/null >> "$(plog "$PROJ")" 2>&1 &
+    disown 2>/dev/null
+    pill_refresh
+    printf '\n'
+    good "$PROJ → $(basename "$tree") starting in the background"
+    info "progress: wt-dev status · output: wt-dev logs · hold the terminal: --wait"
+    printf '\n'
+  fi
+}
+
+# Every way a start can end badly funnels through here, so the state file, the
+# pill colour and the notification can never disagree about it.
+start_failed() {
+  local tree="$1" why="$2"
+  sput "$PROJ" phase failed
+  pill_refresh
+  warn "$why"
+  notify critical "$PROJ failed to start" \
+    "$(basename "$tree") · $why"$'\n'"wt-dev status · wt-dev logs"
+}
+
+# The actual start. Runs in the foreground under `--wait`, and inside the detached
+# `__start` otherwise; both paths land here so there is one implementation.
+run_start() {
+  local tree="$1" rebuild="$2" fp="$3" runner
+  runner="$(cfg runner compose)"
+  if [ "$runner" = "compose" ]; then
+    if ! start_compose "$tree" "$rebuild"; then
+      start_failed "$tree" "failed to start — see \`wt-dev logs\`"
+      return 1
+    fi
+    if ! wait_settled "$tree" 600; then
+      start_failed "$tree" "not all services settled — \`wt-dev status\` names which"
+      return 1
+    fi
+  else
+    stop_process >/dev/null 2>&1
+    start_process "$tree" "$rebuild"
+    sput "$PROJ" pid "${PROC_PID:-}"; sput "$PROJ" pgid "${PROC_PGID:-}"
+    # A process runner that dies on startup (missing script, bad build, taken port)
+    # would otherwise just read as "stopped" — the same as never having tried.
+    sleep 1.5
+    if ! process_alive "$PROJ"; then
+      printf '%s' "$C_DIM"; tail -8 "$(plog "$PROJ")" | sed 's/^/      /'; printf '%s\n' "$C_R"
+      start_failed "$tree" "$PROJ exited immediately — last lines above, full log $(plog "$PROJ")"
+      return 1
+    fi
+  fi
+  # Recorded only once the tree has demonstrably started, so a tree whose setup
+  # failed is retried rather than remembered as prepared.
+  tree_fp_set "$PROJ" "$fp" "$tree"
+  sput "$PROJ" phase ready
+  pill_refresh
+  notify normal "$PROJ is live" \
+    "$(basename "$tree") · $(tree_branch "$tree")"$'\n'"up in $(human_since "$(sget "$PROJ" started)")"
+  return 0
+}
+
+# Internal: the detached half of `use`. Re-derives its own context so it depends on
+# nothing but its arguments and the state file.
+cmd__start() {
+  local tree="$1" rebuild="$2" fp="$3"
+  load_project "$tree" || exit 1
+  [ -r "$tree/.wtdev.toml" ] && cfg_load "$tree/.wtdev.toml"
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  local db_var; db_var="$(cfg db_var)"
+  [ -n "$db_var" ] && export "$db_var=$(sget "$PROJ" db)"
+  run_start "$tree" "$rebuild" "$fp"
+}
+
+cmd_down() {
+  local target="${1:-}" main
+  if [ -n "$target" ]; then
+    main="$(find_main_by_name "$target")" || die "no registered project named '$target'"
+    MAIN="$main"; cfg_load "$main/.wtdev.toml"
+  else
+    load_project "$PWD" || die "no .wtdev.toml at this repo's root"
+  fi
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  local tree; tree="$(resolve_live_tree "$PROJ")"; [ -z "$tree" ] && tree="$MAIN"
+  step "stopping $PROJ"
+  if [ "$(cfg runner compose)" = "compose" ]; then stop_compose "$tree"; else stop_process; fi
+  sclear "$PROJ"
+  pill_refresh
+  good "$PROJ stopped"
+}
+
+cmd_restart() {
+  load_project "$PWD" || die "no .wtdev.toml at this repo's root"
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  local tree; tree="$(resolve_live_tree "$PROJ")" || die "$PROJ is not running"
+  cmd_use "$tree"
+}
+
+cmd_logs() {
+  load_project "$PWD" || die "no .wtdev.toml at this repo's root"
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  local tree; tree="$(resolve_live_tree "$PROJ")" || die "$PROJ is not running"
+  if [ "$(cfg runner compose)" = "compose" ]; then
+    compose_cmd "$tree" logs -f "$@"
+  else
+    tail -f "$(plog "$PROJ")"
+  fi
+}
+
+cmd_compose() {
+  [ "${1:-}" = "--" ] && shift
+  load_project "$PWD" || die "no .wtdev.toml at this repo's root"
+  PROJ="$(cfg name "$(basename "$MAIN")")"
+  local tree; tree="$(resolve_live_tree "$PROJ")"; [ -z "$tree" ] && tree="$MAIN"
+  local db_var; db_var="$(cfg db_var)"
+  [ -n "$db_var" ] && export "$db_var=$(sget "$PROJ" db)"
+  compose_cmd "$tree" "$@"
+}
+
+cmd_doctor() {
+  local main p holder kind owner detail
+  printf '\n  %sdeclared ports%s\n\n' "$C_B$C_FG" "$C_R"
+  while read -r main; do
+    MAIN="$main"; cfg_load "$main/.wtdev.toml" || continue
+    PROJ="$(cfg name "$(basename "$main")")"
+    for p in $(cfg ports); do
+      if holder="$(port_holder "$p")"; then
+        IFS='|' read -r kind owner detail <<< "$holder"
+        if [ "$kind" = "docker" ] && [ "$owner" = "$PROJ" ]; then
+          printf '   %s●%s %-6s %-14s %sthis project%s (%s)\n' "$C_OK" "$C_R" ":$p" "$PROJ" "$C_DIM" "$C_R" "$detail"
+        elif [ "$kind" = "docker" ]; then
+          printf '   %s✗%s %-6s %-14s %scompose project %s%s (%s)\n' "$C_ERR" "$C_R" ":$p" "$PROJ" "$C_WARN" "$owner" "$C_R" "$detail"
+        else
+          printf '   %s✗%s %-6s %-14s %s%s%s (pid %s)\n' "$C_ERR" "$C_R" ":$p" "$PROJ" "$C_WARN" "$owner" "$C_R" "$detail"
+        fi
+      else
+        printf '   %s○%s %-6s %-14s %sfree%s\n' "$C_DIM" "$C_R" ":$p" "$PROJ" "$C_DIM" "$C_R"
+      fi
+    done
+  done < <(registry_list)
+  printf '\n'
+}
+
+cmd_ls() {
+  local main
+  while read -r main; do
+    MAIN="$main"; cfg_load "$main/.wtdev.toml" || continue
+    PROJ="$(cfg name "$(basename "$main")")"
+    if project_live "$PROJ"; then
+      printf '%s● %-14s%s %s\n' "$C_OK" "$PROJ" "$C_R" "$(basename "$(resolve_live_tree "$PROJ")")"
+    else
+      printf '%s○ %-14s%s %s\n' "$C_DIM" "$PROJ" "$C_R" "stopped"
+    fi
+  done < <(registry_list)
+}
+
+# ---- fzf switcher ----------------------------------------------------------
+cmd_pick() {
+  local main wt live_tree lines="" mark tag proj
+  # Coloured from the palette directly rather than from C_OK/C_DIM: those blank
+  # themselves out when stdout is not a tty, and fzf --ansi wants the codes.
+  local c_live c_dim c_off
+  c_live="$(hex2fg "$WT_OK")"; c_dim="$(hex2fg "$WT_MUTED")"; c_off=$'\033[0m'
+  while read -r main; do
+    MAIN="$main"; cfg_load "$main/.wtdev.toml" || continue
+    proj="$(cfg name "$(basename "$main")")"
+    PROJ="$proj"   # compose_cmd, reached via project_live, acts on PROJ
+    live_tree=""; project_live "$proj" && live_tree="$(resolve_live_tree "$proj")"
+    while read -r wt; do
+      [ -z "$wt" ] && continue
+      if [ "$wt" = "$live_tree" ]; then
+        mark="${c_live}●${c_off}"; tag="${c_live}live${c_off}"
+      else
+        mark="${c_dim}○${c_off}"; tag=" "
+      fi
+      lines+="$(printf '%s\t%-13s\t%-16s\t%-42s\t%-6s\t%s' "$mark" "$proj" "$(basename "$wt")" "$(tree_branch "$wt")" "$tag" "$wt")"$'\n'
+    done < <(worktrees "$main")
+  done < <(registry_list)
+
+  [ -z "$lines" ] && die "no registered projects"
+  # `pick --list` prints the rows and stops. Inspecting them any other way means
+  # driving fzf, and fzf's --filter mode emits a match that the picker then acts
+  # on — i.e. "just looking" would switch the live stack.
+  [ "${1:-}" = "--list" ] && { printf '%s' "$lines"; return 0; }
+
+  # shellcheck disable=SC1090
+  [ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
+  : "${SESH_FZF_COLORS:=bg+:#1b1f27,bg:#0a0b0e,fg:#d8dee9,fg+:#eceff4,hl:#88c0d0,hl+:#88c0d0,border:#88c0d0,label:#88c0d0,gutter:#0a0b0e,prompt:#81a1c1,pointer:#b48ead,marker:#a3be8c,info:#60697d,header:#6c7a96,spinner:#81a1c1}"
+
+  local sel
+  sel="$(printf '%s' "$lines" | fzf \
+      --ansi --no-sort --reverse --height 100% \
+      --delimiter='\t' --with-nth=1,2,3,4,5 \
+      --border=rounded --border-label "$(printf '  wt-dev ')" \
+      --prompt "$(printf '   ')" --pointer "$(printf '')" \
+      --color="$SESH_FZF_COLORS" \
+      --header 'enter make live | ctrl-d stop that project' \
+      --bind 'tab:down,btab:up' \
+      --expect=ctrl-d)" || exit 0
+
+  local key line
+  key="$(head -1 <<< "$sel")"; line="$(sed -n '2p' <<< "$sel")"
+  [ -z "$line" ] && exit 0
+  proj="$(cut -f2 <<< "$line" | tr -d ' ')"
+  local path; path="$(cut -f6 <<< "$line")"
+
+  local rc=0
+  if [ "$key" = "ctrl-d" ]; then
+    cmd_down "$proj" || rc=$?
+  else
+    ( cd "$path" && exec "$SELF" use "$path" ) || rc=$?
+  fi
+  printf '\n'
+  # The popup closes as soon as this returns, which is what you want on success —
+  # the switch is backgrounded and the pill reports it. Hold it open only on a
+  # failure, so the reason stays on screen long enough to read.
+  if [ "$rc" != 0 ] && [ -n "${TMUX:-}" ] && [ -t 0 ]; then
+    read -rsn1 -p "$(printf '  failed — press any key to close ')" _
+    printf '\n'
+  fi
+  return "$rc"
+}
+
+# ---- tmux status pill ------------------------------------------------------
+# Runs on every status-interval tick, so it must stay cheap: one `docker ps` per
+# compose project, no `docker compose` invocations (those re-read the config).
+cmd_tmux() {
+  # tmux re-runs this on every status-interval tick, so it must never be able to
+  # hang: a stalled docker daemon would stall the status bar with it. Serve a
+  # cached pill for a few seconds, and time-box the docker call underneath.
+  local cache="$STATE_DIR/pill" now mtime out
+  if [ -f "$cache" ]; then
+    now="$(date +%s)"; mtime="$(stat -c %Y "$cache" 2>/dev/null || echo 0)"
+    [ "$(( now - mtime ))" -lt 5 ] && { cat "$cache"; return 0; }
+  fi
+  local main proj label="" colour="$WT_OK" states phase
+  while read -r main; do
+    MAIN="$main"; cfg_load "$main/.wtdev.toml" 2>/dev/null || continue
+    proj="$(cfg name "$(basename "$main")")"
+    local tree; tree="$(resolve_live_tree "$proj")" || continue
+    [ -z "$tree" ] && continue
+    phase="$(sget "$proj" phase)"
+    if [ "$(cfg runner compose)" = "compose" ]; then
+      states="$(timeout 3 docker ps --filter "label=com.docker.compose.project=$proj" --format '{{.Status}}' 2>/dev/null)"
+      [ -z "$states" ] && [ "$phase" != "starting" ] && continue
+      case "$states" in *unhealthy*) colour="$WT_ERR" ;; *starting*) colour="$WT_WARN" ;; esac
+    else
+      process_alive "$proj" || [ "$phase" = "starting" ] || continue
+    fi
+    # A stack still compiling is exactly the case you want the bar to show.
+    case "$phase" in starting) colour="$WT_WARN" ;; failed) colour="$WT_ERR" ;; esac
+    [ -n "$label" ] && label+=" · "
+    label+="$(cfg short "$proj"):$(basename "$tree")"
+  done < <(registry_list)
+
+  if [ -z "$label" ]; then : > "$cache"; return 0; fi
+  local open close icon
+  open="$(printf '')"; close="$(printf '')"; icon="$(printf '')"
+  out="$(printf '#[fg=%s,bg=default]%s#[bg=%s,fg=%s] %s %s #[fg=%s,bg=default]%s#[bg=default] ' \
+    "$WT_PILL_BG" "$open" "$WT_PILL_BG" "$colour" "$icon" "$label" "$WT_PILL_BG" "$close")"
+  printf '%s' "$out" > "$cache"
+  printf '%s' "$out"
+}
+
+usage() { sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'; }
+
+case "${1:-status}" in
+  use)             shift; cmd_use "$@" ;;
+  __start)         shift; cmd__start "$@" ;;
+  up|start)        shift; cmd_use "$@" ;;
+  down|stop)       shift; cmd_down "$@" ;;
+  restart)         shift; cmd_restart "$@" ;;
+  status|st)       shift; cmd_status "$@" ;;
+  pick)            shift; cmd_pick "$@" ;;
+  tmux)            shift; cmd_tmux "$@" ;;
+  logs)            shift; cmd_logs "$@" ;;
+  compose)         shift; cmd_compose "$@" ;;
+  doctor)          shift; cmd_doctor "$@" ;;
+  ls)              shift; cmd_ls "$@" ;;
+  -h|--help|help)  usage ;;
+  *)               die "unknown command: $1  (try \`wt-dev --help\`)" ;;
+esac
