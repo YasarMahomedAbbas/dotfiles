@@ -13,7 +13,7 @@ Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
 
 ```
 ┌──────┬──────┬──────┬──────┬──────┐
-│ sess │ sess │ sess │ sess │ sess │  keys 0–4  — sessions, alphabetical (up to 5)
+│ sess │ sess │ sess │ sess │ sess │  keys 0–4  — sessions, alphabetical (alerts always shown)
 ├──────┼──────┼──────┼──────┼──────┤
 │MEDIA │ WORK │      │ VPS  │      │  key 5 opens media, 6 opens work, 8 opens VPS; 7 & 9 blank
 ├──────┼──────┼──────┼──────┼──────┤
@@ -22,17 +22,41 @@ Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
 ```
 
 **Sessions (keys 0–4)** — one key per running tmux session, sorted alphabetically so
-positions stay stable (muscle memory), up to five (extra sessions aren't shown). The key
-shows the session name — or, if the session is a configured work project with a logo, that
-logo instead (keyed by session name, so e.g. a running `travelsmart` or `vault` shows its
-mark). Its background color is the Claude status:
+positions stay stable (muscle memory), up to five. The key shows the session name — or, if
+the session is a configured work project with a logo, that logo instead (keyed by session
+name, so e.g. a running `travelsmart` or `vault` shows its mark) — over a **label band**
+naming the pipeline stage or Claude's reason for wanting you:
+
+```
+┌──────────┐
+│          │
+│issue-559 │   session name, or the project's logo
+│          │
+│──────────│
+│plan-brief│   the stage, or "allow Bash?" — truncated to one line
+└──────────┘
+```
+
+The colour says *what kind* of attention it wants; the band says *which state*, which is
+otherwise only discoverable by attaching:
 
 | Color | Meaning | Driven by |
 |---|---|---|
-| 🔴 red | Needs you — Claude finished or is waiting | `@claude_alert` |
-| 🟡 amber | Working | `@claude_busy` |
+| 🔴 red | Needs you — a parked pipeline decision, a permission prompt, or a session idle 60s+ | `@pipeline_state=blocked`, `@claude_state=blocked\|waiting` |
+| 🟡 amber | Working | `@pipeline_state=running`, `@claude_state=working` |
+| 🟢 muted green | A finished pipeline — PR up, nothing to do | `@pipeline_state=done` |
 | ⚫ dim slate | Idle session | — |
 | cyan border | The session your terminal is currently attached to | most-recent tmux client |
+
+A turn merely *ending* is **not** an alert — see [How it works](#how-it-works). A session
+you're attached to never shows a Claude alert either: you can already see it. The state machine
+behind these colours, and the two commands that write it, are documented once in
+**[agent-status.md](agent-status.md)**.
+
+**When there are more sessions than slots**, the alerting ones are guaranteed a key rather
+than falling off the end of the alphabet — the row exists so a glance tells you which agent
+needs you, and that fails if the one that does is off-deck. With five or fewer, ordering is
+purely alphabetical as before.
 
 Colors follow the active theme (`~/.config/theme/sesh-colors.sh` — the same
 `SESH_BELL_COLOR` / `SESH_BUSY_COLOR` the sesh picker uses), and update live when you
@@ -113,9 +137,9 @@ what's already running:
 | Border | Meaning |
 |---|---|
 | cyan | The session your terminal is currently attached to |
-| 🔴 red | Live — Claude needs you (`@claude_alert`) |
-| 🟡 amber | Live — Claude working (`@claude_busy`) |
-| 🟢 green | Live — running but idle |
+| 🔴 red | Live — Claude needs you (`@pipeline_state=blocked`, `@claude_state=blocked\|waiting`) |
+| 🟡 amber | Live — Claude working (`@pipeline_state=running`, `@claude_state=working`) |
+| 🟢 green | Live — running but idle, or a finished pipeline |
 | none | Not running |
 
 **Press a project key** and the deck drops back to the main page after:
@@ -208,10 +232,17 @@ library and Pillow for key images. It:
 
 - polls tmux roughly once a second (`POLL = 1.0`) and re-renders **only** the keys whose
   appearance changed, keeping USB traffic minimal;
-- reads status with the same guard as `sesh-list-bells`: `@claude_alert` / `@claude_busy`
-  hold a pane id, and the status only counts if that pane still exists **and** belongs to
-  the session — so a hook that mis-stamps the option onto the wrong session never lights a
-  wrong key. The options themselves are set by Claude Code hooks in `~/.claude/settings.json`;
+- reads status with the same precedence and guard as `sesh-list-bells`: `@pipeline_state`
+  first (the only source that can report a parked human decision — a stage that stops to ask
+  something ends its turn exactly like one that finished), then `@claude_state`. A turn
+  merely *ending* (`@claude_state=done`) is **not** an alert; treating it as one is what
+  used to light this red at random, because the `Stop` hook fires between every pipeline
+  stage. `@claude_state` is paired with a pane id, and only counts if that pane still exists
+  **and** belongs to the session — so a hook that mis-stamps the option onto the wrong
+  session never lights a wrong key. A session you are attached to shows no Claude alert at
+  all: you can already see it. Both option sets are read in **two** tmux calls per poll for
+  the whole deck, not per key. The options are set by `pipeline-status` and by Claude Code
+  hooks in `~/.claude/settings.json` (via `claude-hook-state`);
 - handles key presses on a background thread, then refreshes immediately so toggles feel
   instant;
 - launches every GUI child (ghostty terminals for session/work/VPS) in its **own transient

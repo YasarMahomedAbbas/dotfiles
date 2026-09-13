@@ -1,0 +1,408 @@
+#!/bin/bash
+# agent-sidebar — a collapsible pane listing every Claude session and what it is doing.
+#
+#   prefix + a    toggle it in this window
+#   prefix + A    toggle it in every window of this session (and in new ones)
+#
+#     ┌────────────────────────────────┐
+#     │ AGENTS                   22:47 │
+#     │                                │
+#     │ ⏸ issue-559       plan-brief   │
+#     │   Agents can't edit the room   │
+#     │   copy on a hotel item         │
+#     │   ✓✓▶···  ████████░░░░  16/24  │
+#     │                                │
+#     │ ▶ issue-612   implement-plan   │
+#     │ …                              │
+#     │ idle  dotfiles · travelsmart   │
+#     └────────────────────────────────┘
+#
+# The fourth consumer of the state described in docs/agent-status.md, after the sesh
+# picker, the status-bar ticket pill and the Stream Deck. It answers the picker's
+# question — which session wants me — without the picker's cost of being opened: the
+# picker is a place you go, this is a thing you glance at.
+#
+# READ-ONLY BY CONSTRUCTION. It never reads a key, never takes focus (the pane is
+# created with `split-window -d`) and holds no cursor. That is not a simplification
+# to be undone later: a surface that is always on screen must not be able to swallow
+# a keystroke meant for the agent you are actually talking to. Switching sessions is
+# still the picker's job (prefix+s).
+#
+# --- What it costs -------------------------------------------------------------
+# Two tmux calls per tick, whatever the number of sessions — everything tmux knows
+# is fetched with `list-sessions -F` / `list-panes -a -F`, which return user options
+# in a format string. A per-session `show-options` here would be ~20 subprocess
+# spawns a tick, the mistake the Stream Deck dashboard already learned not to make.
+#
+# `ticket-context` is the expensive one — it shells out to git three times — so it is
+# NOT on the tick. It is cached per session for TICKET_TTL seconds under
+# ~/.cache/agent-sidebar/, behind a `timeout`, exactly as `ticket-pill` caches its
+# answer: a slow git must never stall the repaint. So the glyph and stage label move
+# at TICK, and the ticket card behind them settles within TICKET_TTL.
+#
+# The frame is diffed against the last one and only redrawn when it differs, so an
+# idle sidebar is a comparison and a sleep, and the pane does not flicker.
+
+set -u
+
+TICK=2                 # seconds between repaints
+TICKET_TTL=10          # seconds a ticket-context answer is reused
+WIDTH="${AGENT_SIDEBAR_WIDTH:-44}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/agent-sidebar"
+
+# Absolute path to this script: the pane is spawned by tmux with `sh -c`, whose PATH
+# is the tmux server's, not fish's — a bare `agent-sidebar render` would resolve only
+# by luck.
+self="$0"
+case "$self" in
+    */*) self="$(readlink -f "$self")" ;;
+    *)   self="$(command -v "$self")" ;;
+esac
+
+# ---------------------------------------------------------------- colours
+# The same palette roles the picker and the ticket card use, rendered by theme-switch.
+# Falls back to dark-nord so the sidebar still draws on a machine where theme-switch
+# has never run.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
+rgb() { printf '\033[38;2;%d;%d;%dm' "$((16#${1:0:2}))" "$((16#${1:2:2}))" "$((16#${1:4:2}))"; }
+C_ALERT="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+C_BUSY="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
+C_OK="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
+C_DIM="$(rgb "${SESH_DIM_COLOR:-6c7a96}")"
+C_TEXT="$(rgb "${SESH_TEXT_COLOR:-d8dee9}")"
+C_ACCENT="$(rgb "${SESH_ACCENT_COLOR:-88c0d0}")"
+C_OFF=$'\033[0m'
+
+# ================================================================= pane plumbing
+
+# The sidebar pane is found again by a pane option rather than by position or index,
+# so splitting, swapping or resizing the window around it cannot lose track of it.
+sidebar_pane() {
+    if [ -n "${1:-}" ]; then
+        tmux list-panes -t "$1" -F '#{pane_id} #{@agent_sidebar}' 2>/dev/null
+    else
+        tmux list-panes -F '#{pane_id} #{@agent_sidebar}' 2>/dev/null
+    fi | awk '$2=="1"{print $1; exit}'
+}
+
+open_sidebar() {
+    local win="${1:-}" p
+    [ -n "$(sidebar_pane "$win")" ] && return 0
+    # -h -b  : to the LEFT of the window
+    # -f     : full height — spans the whole window, not just the active pane
+    # -d     : do NOT move focus into it (see READ-ONLY above)
+    if [ -n "$win" ]; then
+        p="$(tmux split-window -hbfd -l "$WIDTH" -t "$win" -P -F '#{pane_id}' "$self render" 2>/dev/null)"
+    else
+        p="$(tmux split-window -hbfd -l "$WIDTH" -P -F '#{pane_id}' "$self render" 2>/dev/null)"
+    fi
+    [ -z "$p" ] && return 1
+    tmux set-option -p -t "$p" @agent_sidebar 1 2>/dev/null
+}
+
+close_sidebar() {
+    local p; p="$(sidebar_pane "${1:-}")"
+    [ -n "$p" ] && tmux kill-pane -t "$p" 2>/dev/null
+    return 0
+}
+
+windows_of_session() {
+    if [ -n "${1:-}" ]; then
+        tmux list-windows -t "$1" -F '#{window_id}' 2>/dev/null
+    else
+        tmux list-windows -F '#{window_id}' 2>/dev/null
+    fi
+}
+
+case "${1:-toggle}" in
+    # ------------------------------------------------------------------ toggle
+    toggle)
+        win="${2:-}"
+        if [ -n "$(sidebar_pane "$win")" ]; then close_sidebar "$win"; else open_sidebar "$win"; fi
+        exit 0 ;;
+
+    # Every window of this session, and — via @agent_sidebar_on and the
+    # after-new-window hook in .tmux.conf — every window opened later. The desired
+    # state is read from the CURRENT window, so the pair of bindings agree: whatever
+    # prefix+a would do here, prefix+A does everywhere.
+    toggle-all)
+        ses="${2:-}"
+        # `set-option` needs -t only when a session was named; keep the two forms
+        # explicit rather than building the flag by expansion, which word-splits.
+        if [ -n "$(sidebar_pane "$ses")" ]; then
+            if [ -n "$ses" ]; then tmux set-option -t "$ses" -u @agent_sidebar_on 2>/dev/null
+            else                   tmux set-option -u @agent_sidebar_on 2>/dev/null; fi
+            for w in $(windows_of_session "$ses"); do close_sidebar "$w"; done
+        else
+            if [ -n "$ses" ]; then tmux set-option -t "$ses" @agent_sidebar_on 1 2>/dev/null
+            else                   tmux set-option @agent_sidebar_on 1 2>/dev/null; fi
+            for w in $(windows_of_session "$ses"); do open_sidebar "$w"; done
+        fi
+        exit 0 ;;
+
+    # Called from the after-new-window hook: adopt the session's standing choice.
+    auto)
+        win="${2:-}"
+        if [ -n "$win" ]; then
+            on="$(tmux show-options -t "$win" -qv @agent_sidebar_on 2>/dev/null)"
+        else
+            on="$(tmux show-options -qv @agent_sidebar_on 2>/dev/null)"
+        fi
+        [ "$on" = "1" ] && open_sidebar "$win"
+        exit 0 ;;
+
+    open)  open_sidebar "${2:-}"; exit 0 ;;
+    close) close_sidebar "${2:-}"; exit 0 ;;
+    render) ;;
+    once) [ -n "${2:-}" ] && FORCE_WIDTH="$2" ;;
+    *) echo "usage: agent-sidebar [toggle|toggle-all|open|close] [target] | once [width]" >&2
+       exit 1 ;;
+esac
+
+# ================================================================= the frame
+
+# ticket_cached <session> — ticket-context's key=value lines, memoised on disk.
+# A miss that fails (no git, no worktree, a timeout) writes nothing and returns
+# nothing; every caller already tolerates a blank because ticket-context omits keys
+# it cannot resolve.
+ticket_cached() {
+    local s="$1" f="$CACHE/${s//\//_}" age
+    if [ -f "$f" ]; then
+        age=$(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) ))
+        if [ "$age" -lt "$TICKET_TTL" ]; then cat "$f"; return; fi
+    fi
+    mkdir -p "$CACHE" 2>/dev/null
+    if timeout 5 ticket-context "$s" > "$f.tmp" 2>/dev/null; then
+        mv -f "$f.tmp" "$f" 2>/dev/null
+    else
+        rm -f "$f.tmp" 2>/dev/null
+    fi
+    cat "$f" 2>/dev/null
+}
+
+# vis <s> — display width of a string, ANSI stripped.
+vis_len() { local v; v="$(printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g')"; printf '%s' "${#v}"; }
+
+# trunc <s> <n> — cut to n columns, ellipsis if it had to.
+trunc() {
+    local s="$1" n="$2"
+    [ "$n" -lt 1 ] && { printf ''; return; }
+    if [ "${#s}" -le "$n" ]; then printf '%s' "$s"; else printf '%s…' "${s:0:$((n-1))}"; fi
+}
+
+# status_for <session> -> rank|colour|glyph|label
+#
+# The three sources of docs/agent-status.md, in its order: the pipeline's own stamped
+# state, then the window name, then Claude's hooks. Ranks: 0 alert, 1 busy, 2 done.
+#
+# ONE DELIBERATE DIVERGENCE from sesh-list-bells. The picker drops a Claude alert on
+# an attached session, reasoning that a session you are attached to is one you can
+# already see. At session granularity that is right for a picker you opened on
+# purpose; for a sidebar that is always up it is wrong, because "attached" does not
+# mean the Claude pane is on screen — you are as likely to be sitting on the git or
+# dev window while Claude, two windows over, is parked on a permission prompt. So the
+# alert is suppressed only when the pane really is visible: attached AND its window
+# is that session's active window. (This is Herdr's state roll-up, arrived at from
+# the other direction: it rolls a pane's state up to its tab and workspace; we push
+# the visibility test down from the session to the window.)
+status_for() {
+    local s="$1" state detail pane pstate plabel attached rec winlabel mark rest
+    IFS='|' read -r _ state detail pane pstate plabel attached \
+        <<< "$(printf '%s\n' "$sessions_raw" | grep -m1 -F "$s|")"
+
+    case "$pstate" in
+        blocked) printf '0|%s|⏸|%s' "$C_ALERT" "${plabel:-needs you}"; return ;;
+        running) printf '1|%s|▶|%s' "$C_BUSY"  "${plabel:-working}";   return ;;
+        done)    printf '2|%s|✓|%s' "$C_OK"    "${plabel:-done}";      return ;;
+    esac
+
+    winlabel="$(printf '%s\n' "$panes_raw" | awk -F'|' -v s="$s" '$1==s{print $4}' \
+                | grep -m1 -E '(▶|⏸|✓)')"
+    if [ -n "$winlabel" ]; then
+        mark="$(printf '%s' "$winlabel" | grep -oE '(▶|⏸|✓)' | head -1)"
+        rest="$(printf '%s' "$winlabel" | sed -E "s/^.*(▶|⏸|✓)[[:space:]]*//")"
+        case "$mark" in
+            '⏸') printf '0|%s|⏸|%s' "$C_ALERT" "${rest:-needs you}"; return ;;
+            '▶') printf '1|%s|▶|%s' "$C_BUSY"  "${rest:-working}";   return ;;
+            '✓') printf '2|%s|✓|%s' "$C_OK"    "${rest:-done}";      return ;;
+        esac
+    fi
+
+    [ -z "$state" ] && return
+    # A flag whose pane has gone outlived the Claude that set it.
+    rec="$(printf '%s\n' "$panes_raw" | grep -m1 -F "$s|$pane|")"
+    [ -n "$pane" ] && [ -z "$rec" ] && return
+    # Visible right now? Then its alerts are not news. See the note above.
+    if [ "${attached:-0}" != "0" ] && [ -n "$rec" ] \
+       && [ "$(printf '%s' "$rec" | cut -d'|' -f5)" = "1" ]; then
+        case "$state" in blocked|waiting|done) return ;; esac
+    fi
+    case "$state" in
+        blocked) printf '0|%s|⏸|%s' "$C_ALERT" "${detail:-permission}" ;;
+        waiting) printf '0|%s|⏸|%s' "$C_ALERT" "${detail:-waiting}" ;;
+        working) printf '1|%s|▶|%s' "$C_BUSY"  "${detail:-working}" ;;
+        done)    printf '2|%s|✓|%s' "$C_OK"    "${detail:-done}" ;;
+    esac
+}
+
+# card <rank> <colour> <glyph> <label> <session> <width> — one agent, 1-4 lines.
+card() {
+    local rank="$1" col="$2" glyph="$3" label="$4" s="$5" w="$6"
+    local mark=" " namew left pad
+    [ "$s" = "$cur_session" ] && mark="▎"
+
+    # Line 1: marker, glyph, name … label (right-aligned, and the first to be cut).
+    namew=$(( w - 5 ))
+    left="$(trunc "$s" "$namew")"
+    pad=$(( w - 4 - ${#left} - ${#label} ))
+    if [ "$pad" -lt 2 ]; then
+        label="$(trunc "$label" $(( w - 6 - ${#left} )))"
+        pad=$(( w - 4 - ${#left} - ${#label} ))
+        [ "$pad" -lt 2 ] && pad=2
+    fi
+    printf '%s%s%s%s%s%s %s%s%s%*s%s%s%s\n' \
+        "$col" "$mark" "$C_OFF" "$col" "$glyph" "$C_OFF" \
+        "$C_TEXT" "$left" "$C_OFF" "$pad" "" "$col" "$label" "$C_OFF"
+
+    # Lines 2-3: what the ticket is FOR. `problem`, not `title` — the feature's name
+    # only helps if you already remember the ticket; coming to it cold you want the
+    # thing that is wrong. Two lines, hard.
+    local dir root branch slug issue title problem folder stage stage_index stage_total
+    local stage_next tasks_done tasks_total checkpoint dirty commits
+    dir=""; root=""; branch=""; slug=""; issue=""; title=""; problem=""; folder=""
+    stage=""; stage_index=""; stage_total=""; stage_next=""; checkpoint=""
+    tasks_done=""; tasks_total=""; dirty=""; commits=""
+    eval "$(ticket_cached "$s" 2>/dev/null)" 2>/dev/null
+
+    if [ -n "$problem" ]; then
+        printf '%s\n' "$problem" | fold -s -w $(( w - 4 )) \
+            | awk -v max=3 '{a[NR]=$0}
+                 END{ last = (NR<max ? NR : max)
+                      for (i=1; i<=last; i++)
+                          print (i==max && NR>max) ? a[i] "…" : a[i] }' \
+            | sed -E 's/[[:space:]]+$//' \
+            | while IFS= read -r l; do printf '   %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done
+    fi
+
+    # Line 4: the pipeline rail and the checklist bar, on one line. Six stages, one
+    # cell each — the picker's card spells them out, but at 34 columns the shape is
+    # the information: how much is green, and where the ▶ is.
+    if [ -n "$slug" ] && [ -n "${stage_index:-}" ]; then
+        local dots="" i=1 counts="" bar="" bw filled
+        while [ "$i" -le 6 ]; do
+            if   [ "$i" -lt "$stage_index" ]; then dots="$dots${C_OK}✓${C_OFF}"
+            elif [ "$i" -eq "$stage_index" ]; then dots="$dots${C_BUSY}▶${C_OFF}"
+            else                                   dots="$dots${C_DIM}·${C_OFF}"
+            fi
+            i=$(( i + 1 ))
+        done
+        if [ -n "$tasks_total" ] && [ "$tasks_total" -gt 0 ] 2>/dev/null; then
+            counts="$tasks_done/$tasks_total"
+            bw=$(( w - 4 - 6 - 2 - 1 - ${#counts} ))
+            [ "$bw" -lt 4 ] && bw=4
+            filled=$(( tasks_done * bw / tasks_total ))
+            i=0; while [ "$i" -lt "$bw" ]; do
+                if [ "$i" -lt "$filled" ]; then bar="$bar█"; else bar="$bar░"; fi
+                i=$(( i + 1 ))
+            done
+            printf '   %b  %s%s%s %s%s%s\n' "$dots" "$C_OK" "$bar" "$C_OFF" "$C_DIM" "$counts" "$C_OFF"
+        else
+            printf '   %b\n' "$dots"
+        fi
+    elif [ -n "$issue" ] && [ -z "$slug" ]; then
+        # On a branch the pipeline has not named yet — start-ticket hasn't run.
+        printf '   %s%s%s\n' "$C_DIM" "$(trunc "no ticket folder yet" $(( w - 4 )))" "$C_OFF"
+    fi
+}
+
+build_frame() {
+    local w
+    w="${FORCE_WIDTH:-}"
+    [ -z "$w" ] && w="$(tmux display-message -p -t "${TMUX_PANE:-}" '#{pane_width}' 2>/dev/null)"
+    [ -z "$w" ] && w="$WIDTH"
+    [ "$w" -lt 20 ] 2>/dev/null && w=20
+
+    sessions_raw="$(tmux list-sessions \
+        -F '#{session_name}|#{@claude_state}|#{@claude_detail}|#{@claude_pane}|#{@pipeline_state}|#{@pipeline_label}|#{session_attached}' 2>/dev/null)"
+    panes_raw="$(tmux list-panes -a \
+        -F '#{session_name}|#{pane_id}|#{window_index}|#{window_name}|#{window_active}' 2>/dev/null)"
+    # Which session this pane is in, taken from the batch rather than a third call.
+    cur_session="$(printf '%s\n' "$panes_raw" | awk -F'|' -v p="${TMUX_PANE:-}" '$2==p{print $1; exit}')"
+
+    # Header: a wordmark, a rule, and a clock so a frozen sidebar is visibly frozen.
+    # It is three lines rather than one because a single line of text at the very top
+    # of a full-height pane sits level with the tmux status bar and the first card and
+    # reads as neither — the block letters give the eye something to land on, and the
+    # rule puts air between the chrome and the first agent.
+    #
+    # The wordmark is 23 columns wide; below 26 there is no room for it and the header
+    # falls back to the plain word.
+    local clock rule i; clock="$(date +%H:%M)"
+    if [ "$w" -ge 26 ]; then
+        printf '%s ▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▀%s\n' "$C_ACCENT" "$C_OFF"
+        printf '%s █▀█ █▄█ ██▄ █░▀█ ░█░ ▄█%s\n' "$C_ACCENT" "$C_OFF"
+        rule=$(( w - 3 - ${#clock} )); [ "$rule" -lt 1 ] && rule=1
+        printf ' %s' "$C_DIM"
+        i=0; while [ "$i" -lt "$rule" ]; do printf '─'; i=$(( i + 1 )); done
+        printf ' %s%s\n\n' "$clock" "$C_OFF"
+    else
+        printf '%s AGENTS%*s%s%s\n\n' "$C_ACCENT" $(( w - 8 - ${#clock} )) "" "$clock" "$C_OFF"
+    fi
+
+    local cards0="" cards1="" cards2="" idle="" idle_cur=""
+    local s st rank col glyph label
+    while IFS='|' read -r s _ _ _ _ _ _; do
+        [ -z "$s" ] && continue
+        st="$(status_for "$s")"
+        if [ -z "$st" ]; then
+            if [ "$s" = "$cur_session" ]; then idle_cur="▎$s"
+            else idle="${idle:+$idle · }$s"; fi
+            continue
+        fi
+        IFS='|' read -r rank col glyph label <<< "$st"
+        case "$rank" in
+            0) cards0="$cards0$(card "$rank" "$col" "$glyph" "$label" "$s" "$w")"$'\n\n' ;;
+            1) cards1="$cards1$(card "$rank" "$col" "$glyph" "$label" "$s" "$w")"$'\n\n' ;;
+            *) cards2="$cards2$(card "$rank" "$col" "$glyph" "$label" "$s" "$w")"$'\n\n' ;;
+        esac
+    done <<< "$sessions_raw"
+
+    # Alerts, then working, then finished — the picker's order, for the same reason:
+    # the session that wants you floats to the top.
+    printf '%s%s%s' "$cards0" "$cards1" "$cards2"
+
+    # Sessions with no agent state at all get one dim line between them, not a card.
+    idle="${idle_cur:+$idle_cur${idle:+ · }}$idle"
+    if [ -n "$idle" ]; then
+        printf '%sidle%s\n' "$C_DIM" "$C_OFF"
+        printf '%s\n' "$idle" | fold -s -w $(( w - 2 )) \
+            | while IFS= read -r l; do printf ' %s%s%s\n' "$C_DIM" "$l" "$C_OFF"; done
+    fi
+}
+
+# ================================================================= draw
+
+if [ "${1:-}" = "once" ]; then build_frame; exit 0; fi
+
+cleanup() { printf '\033[?25h'; exit 0; }
+trap cleanup TERM INT HUP
+# A resize changes every padded line, so the diff would catch it anyway — this just
+# makes it immediate instead of up to TICK late.
+redraw=0
+trap 'redraw=1' WINCH
+
+printf '\033[?25l'                       # no cursor: nothing here is interactive
+prev=""
+while :; do
+    frame="$(build_frame)"
+    if [ "$frame" != "$prev" ] || [ "$redraw" = "1" ]; then
+        # Home, then clear each line as it is written and wipe whatever is below,
+        # rather than clearing the screen first — a clear-then-draw flashes.
+        printf '\033[H'
+        printf '%s\n' "$frame" | while IFS= read -r l; do printf '%s\033[K\n' "$l"; done
+        printf '\033[J'
+        prev="$frame"; redraw=0
+    fi
+    sleep "$TICK"
+done

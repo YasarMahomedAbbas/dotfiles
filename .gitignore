@@ -10,3 +10,6 @@ fish/.config/fish/conf.d/
 fish/.config/fish/completions/
 fish/.config/fish/generated_completions/
 fish/.config/fish/fish_history
+
+# Python bytecode caches
+__pycache__/

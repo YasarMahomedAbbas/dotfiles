@@ -1,28 +1,142 @@
 #!/bin/bash
 # Preview for the sesh picker (bin/sesh-picker).
-# Arg $1 = the raw fzf line: "<ansi><icon><ansi> <name-or-path>".
+# Arg $1 = the raw fzf line: "<ansi><icon><ansi> <name>  <status>".
 #
-#  - running tmux session  -> its window list + a live capture of the active pane
-#  - a directory           -> a file tree (eza)
-#  - anything else         -> sesh's own preview, on the cleaned name
+#   - a running tmux session on a frontend-pipeline ticket -> a ticket card:
+#     the problem being solved, on which branch, where it is in the pipeline, how
+#     far through the checklist, and only then a short tail of Claude's pane
+#   - any other running session -> branch + working-tree state + windows + pane
+#   - a directory                -> a file tree (eza)
+#   - anything else              -> sesh's own preview
+#
+# The card comes first on purpose. A raw pane capture answers "what did Claude
+# just print", which is the wrong question when you are scanning six sessions for
+# the one that needs you — you want the ticket, the stage and whether it is stuck.
+# The pane tail is kept, last and short, because when a session IS parked on a
+# question that question is in it.
 
 raw="$1"
-
-# Clean the raw fzf line to the bare name (strips ANSI, the leading icon glyph,
-# and the trailing Claude status glyph sesh-list-bells appends); otherwise it
-# leaks into the name and every check below (has-session, -d) fails, falling
-# through to an empty generic preview. That glyph is the whole reason you're
-# previewing. Shared helper so this can't drift from sesh-list-bells/sesh-picker.
 name="$(sesh-clean-name "$raw")"
 
-C_ACCENT='\033[38;2;136;192;208m'   # frost cyan
-C_DIM='\033[38;2;76;86;106m'        # nord3
-C_RESET='\033[0m'
+# Colours follow the active theme (~/.config/theme/sesh-colors.sh, rendered by
+# theme-switch), falling back to dark-nord so the preview still renders on a machine
+# where theme-switch has never run.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
+rgb() { printf '\033[38;2;%d;%d;%dm' "$((16#${1:0:2}))" "$((16#${1:2:2}))" "$((16#${1:4:2}))"; }
+C_ACCENT="$(rgb "${SESH_ACCENT_COLOR:-88c0d0}")"
+C_DIM="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
+C_TEXT="$(rgb "${SESH_TEXT_COLOR:-d8dee9}")"
+C_OK="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
+C_WARN="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
+C_ALERT="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+C_RESET=$'\033[0m'
 
-# 1) Running tmux session → window list + active pane
+rule() { printf "${C_DIM}  %s${C_RESET}\n" "────────────────────────────────────────────"; }
+
+# ---------------------------------------------------------------- running session
 if tmux has-session -t "=$name" 2>/dev/null; then
-    printf "${C_ACCENT}  %s${C_RESET}\n\n" "$name"
-    # tmux -F can't emit terminal colours, so colour the rows in the shell
+
+    # Status, from the same three sources sesh-list-bells reads, in the same order:
+    # the pipeline's own stamped state, then its window name, then Claude's hooks.
+    pstate="$(tmux show-options -t "$name" -qv @pipeline_state 2>/dev/null)"
+    plabel="$(tmux show-options -t "$name" -qv @pipeline_label 2>/dev/null)"
+    winlabel="$(tmux list-windows -t "=$name" -F '#{window_name}' 2>/dev/null | grep -m1 -E '(▶|⏸|✓)')"
+    hstate="$(tmux show-options -t "$name" -qv @claude_state 2>/dev/null)"
+    hdetail="$(tmux show-options -t "$name" -qv @claude_detail 2>/dev/null)"
+    hpane="$(tmux show-options -t "$name" -qv @claude_pane 2>/dev/null)"
+    # A flag whose pane has gone (or moved session) outlived its Claude — drop it.
+    if [ -n "$hpane" ] && \
+       [ "$(tmux display-message -p -t "$hpane" '#{session_name}' 2>/dev/null)" != "$name" ]; then
+        hstate=""; hpane=""
+    fi
+
+    banner="" bcol="$C_DIM"
+    if [ -n "$pstate" ]; then
+        case "$pstate" in
+            blocked) bcol="$C_ALERT"; banner="needs you · ${plabel:-decision}" ;;
+            running) bcol="$C_WARN";  banner="working · ${plabel:-in progress}" ;;
+            done)    bcol="$C_OK";    banner="done · ${plabel:-finished}" ;;
+        esac
+    elif [ -n "$winlabel" ]; then
+        case "$winlabel" in
+            *⏸*) bcol="$C_ALERT"; banner="needs you · $(printf '%s' "$winlabel" | sed -E 's/^.*⏸[[:space:]]*//')" ;;
+            *▶*) bcol="$C_WARN";  banner="working · $(printf '%s' "$winlabel" | sed -E 's/^.*▶[[:space:]]*//')" ;;
+            *✓*) bcol="$C_OK";    banner="done · $(printf '%s' "$winlabel" | sed -E 's/^.*✓[[:space:]]*//')" ;;
+        esac
+    elif [ -n "$hstate" ]; then
+        case "$hstate" in
+            blocked) bcol="$C_ALERT"; banner="needs you · ${hdetail:-permission}" ;;
+            waiting) bcol="$C_ALERT"; banner="waiting · ${hdetail:-no input for a while}" ;;
+            working) bcol="$C_WARN";  banner="working${hdetail:+ · $hdetail}" ;;
+            done)    bcol="$C_OK";    banner="idle · turn finished" ;;
+        esac
+    fi
+
+    printf "${C_ACCENT}  %s${C_RESET}" "$name"
+    [ -n "$banner" ] && printf "   ${bcol}%s${C_RESET}" "$banner"
+    printf "\n\n"
+
+    # ------------------------------------------------------------- the ticket card
+    dir="" root="" branch="" slug="" issue="" title="" problem="" stage="" stage_index=""
+    tasks_done="" tasks_total="" checkpoint="" dirty="" commits=""
+    eval "$(ticket-context "$name" 2>/dev/null)"
+
+    if [ -n "$branch" ]; then
+        # The headline is `problem`, not `title`. Scanning six sessions, the feature's
+        # name ("South African money formatting") only helps if you already remember
+        # the ticket; what you came here for is the thing that is wrong. `title` is not
+        # printed as well — it is the branch slug in prose, and the branch is the very
+        # next line.
+        if [ -n "$problem" ]; then
+            printf "  ${C_ACCENT}%s${C_RESET}  ${C_TEXT}%s${C_RESET}\n" \
+                "${issue:+#$issue}" "$problem"
+        elif [ -n "$issue" ]; then
+            printf "  ${C_ACCENT}#%s${C_RESET}\n" "$issue"
+        fi
+        printf "  ${C_DIM}%s${C_RESET}\n" "$branch"
+
+        line=""
+        [ -n "$commits" ] && [ "$commits" != "0" ] && line="$commits commit(s) ahead of develop"
+        if [ -n "$dirty" ] && [ "$dirty" != "0" ]; then
+            line="${line:+$line · }$dirty file(s) uncommitted"
+        fi
+        [ -n "$line" ] && printf "  ${C_DIM}%s${C_RESET}\n" "$line"
+        printf "\n"
+
+        # --------------------------------------------------------- the stage rail
+        # Only meaningful once a ticket folder exists; before that every session
+        # would read as "stage 1" whether or not it is on the pipeline at all.
+        if [ -n "$slug" ]; then
+            printf "  ${C_DIM}pipeline${C_RESET}  "
+            i=1
+            for s in plan build review docs verify PR; do
+                if   [ "$i" -lt "${stage_index:-0}" ]; then printf "${C_OK}✓ %s${C_RESET}  " "$s"
+                elif [ "$i" -eq "${stage_index:-0}" ]; then printf "${C_WARN}▶ %s${C_RESET}  " "$s"
+                else                                        printf "${C_DIM}· %s${C_RESET}  " "$s"
+                fi
+                i=$((i + 1))
+            done
+            printf "\n"
+        fi
+
+        [ -n "$checkpoint" ] && printf "  ${C_TEXT}%s${C_RESET}\n" "$checkpoint"
+
+        if [ -n "$tasks_total" ] && [ "$tasks_total" -gt 0 ] 2>/dev/null; then
+            width=24
+            filled=$(( tasks_done * width / tasks_total ))
+            bar=""
+            i=0; while [ "$i" -lt "$width" ]; do
+                if [ "$i" -lt "$filled" ]; then bar="$bar█"; else bar="$bar░"; fi
+                i=$((i + 1))
+            done
+            printf "  ${C_DIM}tasks${C_RESET}     ${C_OK}%s${C_RESET} ${C_DIM}%s/%s${C_RESET}\n" \
+                "$bar" "$tasks_done" "$tasks_total"
+        fi
+        printf "\n"
+    fi
+
+    # ------------------------------------------------------------------- windows
     tmux list-windows -t "=$name" \
         -F '#{window_index}:#{window_name}:#{window_panes}:#{window_active}:#{window_zoomed_flag}' \
     | while IFS=: read -r idx wname panes active zoomed; do
@@ -33,37 +147,28 @@ if tmux has-session -t "=$name" 2>/dev/null; then
             printf "  ${C_DIM}%s: %s  %sp${C_RESET}\n" "$idx" "$wname" "$panes"
         fi
     done
-    # If Claude flagged a specific pane, preview THAT pane — exactly what it is
-    # showing / asking for / working in — taking the tail so a prompt or live
-    # output at the bottom is visible. @claude_alert (Stop/PermissionRequest:
-    # done or waiting) takes priority over @claude_busy (working); they're
-    # mutually exclusive in practice. Otherwise fall back to the active pane.
-    #
-    # pane_here filters panes the hooks misattributed to another session (see
-    # sesh-list-bells): the flagged pane must actually live in THIS session,
-    # else we'd preview an unrelated session's Claude and label it as this one's.
-    pane_here() { [ -n "$1" ] && [ "$(tmux display-message -p -t "$1" '#{session_name}' 2>/dev/null)" = "$name" ]; }
-    alert_pane="$(tmux show-options -t "$name" -qv @claude_alert 2>/dev/null)"
-    busy_pane="$(tmux show-options -t "$name" -qv @claude_busy 2>/dev/null)"
-    if pane_here "$alert_pane" && tmux capture-pane -p -t "$alert_pane" >/dev/null 2>&1; then
-        printf "\n${C_ACCENT}  ──  Claude · needs attention ──${C_RESET}\n"
-        tmux capture-pane -ep -t "$alert_pane" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | tail -30
-    elif pane_here "$busy_pane" && tmux capture-pane -p -t "$busy_pane" >/dev/null 2>&1; then
-        printf "\n${C_ACCENT}  ──  Claude · working… ──${C_RESET}\n"
-        tmux capture-pane -ep -t "$busy_pane" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | tail -30
+
+    # -------------------------------------------------------------- the pane tail
+    # Short by design: the card above is the answer to "what is this session", and
+    # this is only here for the case where Claude is parked on a question.
+    lines=14
+    target=""
+    if [ -n "$hpane" ] && tmux capture-pane -p -t "$hpane" >/dev/null 2>&1; then
+        target="$hpane"
     else
-        printf "\n${C_DIM}  ── active pane ──${C_RESET}\n"
-        active="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"
-        tmux capture-pane -ep -t "=$name:$active" 2>/dev/null | sed -e 's/[[:space:]]*$//; s/^/  /' | head -30
+        aw="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"
+        target="=$name:$aw"
     fi
+    printf "\n"; rule
+    tmux capture-pane -ep -t "$target" 2>/dev/null \
+        | sed -e 's/[[:space:]]*$//' | grep -v '^$' | tail -"$lines" | sed -e 's/^/  /'
     exit 0
 fi
 
-# 2) A real directory → file tree
+# -------------------------------------------------------------------- a directory
 if [ -d "$name" ]; then
     eza --tree --level=2 --icons --color=always --group-directories-first "$name" 2>/dev/null | head -60
     exit 0
 fi
 
-# 3) Fall back to sesh's own preview, with the cleaned name
 sesh preview "$name" 2>/dev/null

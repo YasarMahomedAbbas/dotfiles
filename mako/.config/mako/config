@@ -6,29 +6,38 @@
 
 font=JetBrainsMono Nerd Font 10
 
-# Position
-anchor=bottom-center
-margin=20
+# Position — outer-margin is the gap to the screen edge, margin the gap
+# between stacked notifications
+anchor=center-right
+outer-margin=12
+margin=8
 layer=overlay
 
 # Sizing
-width=380
-height=140
-padding=14
+width=360
+height=160
+padding=14,18
 border-size=2
-border-radius=10
+border-radius=12
+
+# Icons
+icons=1
+icon-location=left
+max-icon-size=40
+icon-border-radius=8
 
 # Behavior
 default-timeout=5000
 ignore-timeout=0
 max-visible=4
 sort=-time
-icons=1
-max-icon-size=48
 markup=1
 actions=1
+# Collapse repeats (same app + title) into one card with a count
+group-by=app-name,summary
 
-# Theme colors (background/text/border/progress + per-urgency accents)
+# Theme colors + format strings (background/text/border/progress, per-urgency
+# accents, and the app-name header, which needs a theme color)
 include=/home/dracul/.config/theme/mako.conf
 
 [urgency=low]

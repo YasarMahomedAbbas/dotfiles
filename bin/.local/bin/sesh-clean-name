@@ -1,15 +1,21 @@
 #!/bin/bash
 # Clean a raw picker line down to the bare sesh/tmux session name:
 #   - strip fzf/ANSI colour escapes
+#   - strip everything from the first run of 2+ spaces: that is the column gutter
+#     sesh-list-bells inserts before the branch and status columns
 #   - strip the leading icon glyph (from `sesh list --icons`) + spaces
-#   - strip the trailing Claude status glyph — bell (U+F0F3) or chat
-#     bubble (U+F075) — appended by sesh-list-bells
+#
+# The gutter is the sentinel rather than the status glyph, because the branch column
+# sits BETWEEN the name and the status — a glyph-anchored strip would leave it behind
+# and hand `sesh connect` a name that doesn't exist. `sesh list` never emits two
+# consecutive spaces of its own: a session name or a zoxide path has none, so the
+# first double space in a row is always ours.
 #
 # Reads the line from $1 if given, else from stdin. Shared by sesh-preview
 # (preview target), sesh-list-bells (has-session check), and sesh-picker
-# (ctrl-d kill target). Kept in one place so the three cleaners can't drift.
+# (connect + ctrl-d kill target) so the cleaners can't drift.
 raw="${1-$(cat)}"
 printf '%s' "$raw" \
   | sed -E 's/\x1b\[[0-9;]*m//g' \
-  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//' \
-  | sed -E 's/[[:space:]]*(\xef\x83\xb3|\xef\x81\xb5)[[:space:]]*$//'
+  | sed -E 's/[[:space:]]{2,}.*$//' \
+  | sed -E 's/^[^A-Za-z0-9/~.]*//; s/[[:space:]]+$//'

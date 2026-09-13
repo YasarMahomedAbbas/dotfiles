@@ -1,0 +1,85 @@
+#!/bin/bash
+# ticket-pill — the status-bar pill naming what THIS session's ticket is for.
+#
+#   set -g status-left "... #(ticket-pill #{session_name} #{client_width})"
+#
+# Both arguments are passed in rather than looked up, and that is load-bearing:
+# tmux caches a `#()` job by its expanded command string, so a bare `#(ticket-pill)`
+# would run once and paint the same pill onto every attached session. Interpolating
+# the two formats gives each session-and-width its own job — which is also how the
+# pill re-sizes when you resize the window.
+#
+# The width in particular cannot be looked up from in here. `display-message -t` takes
+# a *pane* target, not a client, so `#{client_width}` under it answers for whichever
+# client tmux considers current — the wrong one whenever more than one is attached,
+# and silently so: the pill just renders at someone else's width.
+#
+# Prints ITSELF — powerline caps, colours and all — or absolutely nothing, for the
+# same reason `wt-dev tmux` does: a pill whose contents are empty still renders as a
+# stray blob, and tmux's `#{?...}` cannot branch on the output of a `#()`.
+#
+# Everything it knows comes from `ticket-context`, so the bar, the sesh picker's card
+# and the pipeline orchestrator are all reading one resolver. What it shows is the
+# `problem` key — the one line saying what is actually wrong — because the branch
+# slug is already in the window name and the session name, and a third restatement of
+# the slug is not what you need when you come back to a session cold.
+
+set -u
+
+session="${1:-}"
+width="${2:-}"
+[ -z "$session" ] && exit 0
+case "$width" in ''|*[!0-9]*) width=200 ;; esac
+[ "$width" -eq 0 ] && width=200
+
+# tmux re-runs this every status-interval (15s by default) per attached session, and
+# `ticket-context` shells out to git several times. Serve a cached pill in between,
+# and time-box the resolver so a slow git can never stall the bar.
+cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ticket-pill"
+# Keyed by width as well as session: the two clients of one session can be different
+# sizes, and the pill is truncated to fit whichever is asking.
+cache="$cache_dir/$(printf '%s.%s' "$session" "$width" | tr -c 'A-Za-z0-9_.-' '_')"
+mkdir -p "$cache_dir" 2>/dev/null
+if [ -f "$cache" ]; then
+    now="$(date +%s)"; mtime="$(stat -c %Y "$cache" 2>/dev/null || echo 0)"
+    [ "$(( now - mtime ))" -lt 10 ] && { cat "$cache"; exit 0; }
+fi
+
+# Colours track the active theme; the fallbacks keep the pill rendering on a machine
+# where theme-switch has never run.
+# shellcheck disable=SC1090
+[ -r "$HOME/.config/theme/ticket-colors.sh" ] && . "$HOME/.config/theme/ticket-colors.sh"
+PILL_BG="${TICKET_PILL_BG:-#29303c}"
+NUM_FG="${TICKET_NUM_FG:-#ebcb8b}"
+TEXT_FG="${TICKET_TEXT_FG:-#d8dee9}"
+
+issue="" problem=""
+eval "$(timeout 3 ticket-context "$session" 2>/dev/null | grep -E '^(issue|problem)=')"
+[ -z "$problem" ] && [ -z "$issue" ] && { : > "$cache"; exit 0; }
+
+# --- How much room there is -----------------------------------------------------
+# The bar is session pill | window list (centred) | worktree + host + clock. Budget
+# the fixed furniture out of the client width and give the pill what is left, capped
+# so a short problem line never pushes the centred window list off its centre. Below
+# the floor the pill drops out entirely rather than shipping a two-word stub: on a
+# narrow client the window list is the thing you cannot afford to lose.
+budget=$(( width - 108 ))
+[ "$budget" -lt 24 ] && { : > "$cache"; exit 0; }
+[ "$budget" -gt 62 ] && budget=62
+
+# Bash substring rather than `printf '%.*s'`: the latter counts bytes, and these
+# lines are full of em-dashes, so a byte-truncated tail can end mid-character and
+# print a replacement glyph in the bar.
+text="$problem"
+[ "${#text}" -gt "$budget" ] && text="${text:0:$(( budget - 1 ))}…"
+
+# tmux re-reads `#[...]` in a `#()`'s output, so a literal `#` in the ticket text
+# would be parsed as the start of one. Double every `#` in the text, then prepend
+# the issue number's own already-doubled `#` — both come back out as a single `#`.
+label="${issue:+##$issue }$(printf '%s' "$text" | sed 's/#/##/g')"
+
+open="$(printf '')"; close="$(printf '')"; icon="$(printf '')"
+out="$(printf '#[fg=%s,bg=default]%s#[bg=%s,fg=%s] %s #[fg=%s]%s #[fg=%s,bg=default]%s#[bg=default] ' \
+    "$PILL_BG" "$open" "$PILL_BG" "$NUM_FG" "$icon" "$TEXT_FG" "$label" "$PILL_BG" "$close")"
+printf '%s' "$out" > "$cache"
+printf '%s' "$out"

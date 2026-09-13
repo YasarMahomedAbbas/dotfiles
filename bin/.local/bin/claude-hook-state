@@ -1,0 +1,89 @@
+#!/bin/bash
+# claude-hook-state <state> [--if-blocked] — record what a Claude session is doing,
+# for the sesh picker (sesh-list-bells / sesh-preview) and the tmux status bar.
+#
+# Called from the Claude Code hooks in ~/.claude/settings.json. States:
+#
+#   working   Claude is running.                     UserPromptSubmit, PostToolUse
+#   blocked   Waiting on a permission answer.        PermissionRequest
+#   waiting   Finished, and you never came back.     Notification (idle_prompt)
+#   done      Turn ended. NOT an alert.              Stop
+#   (none)    Nothing to say.                        SessionEnd
+#
+# Why `done` is separate from `waiting`, and why this script exists at all: the
+# Stop hook fires at the end of EVERY assistant turn — including between the
+# frontend-pipeline's stage subagents, where Claude carries straight on to the next
+# stage. The previous hooks treated Stop as "needs attention" whenever the session
+# was detached, which is why the bell came on at apparently random moments: it was
+# firing at every turn boundary of a run that was not waiting for anything.
+#
+# Only two states are alerts, and both genuinely mean the session has stopped and
+# is yours: `blocked` (a permission prompt — fires immediately) and `waiting`
+# (Claude Code's Notification/idle_prompt, ~60s after a turn ends with no input
+# from you). A turn ending is not an alert, so `done` is silent.
+#
+# `--if-blocked` only writes when the session is currently `blocked`. PostToolUse
+# uses it to clear a permission alert the moment the approved tool actually runs,
+# without paying a write on every one of the hundreds of tool calls in a session.
+#
+# State lands as session options on the session owning $TMUX_PANE, together with
+# the pane id — a session holds many panes and only one of them is Claude's, so
+# consumers re-check that the pane still lives there before trusting the state.
+
+set -u
+
+state="${1:-}"
+if_blocked=0
+[ "${2:-}" = "--if-blocked" ] && if_blocked=1
+
+[ -z "${TMUX_PANE:-}" ] && exit 0
+session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" || exit 0
+[ -z "$session" ] && exit 0
+
+if [ "$if_blocked" = 1 ]; then
+    [ "$(tmux show-options -t "$session" -qv @claude_state 2>/dev/null)" = "blocked" ] || exit 0
+fi
+
+# Clear everything (SessionEnd).
+if [ -z "$state" ]; then
+    for opt in @claude_state @claude_pane @claude_detail @claude_ts; do
+        tmux set-option -t "$session" -u "$opt" 2>/dev/null
+    done
+    exit 0
+fi
+
+# A short label for the picker, read off the hook's own JSON on stdin. Never block
+# on a terminal: this script is also run by hand when testing.
+detail=""
+if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
+    detail="$(jq -r '
+        .tool_name
+        // .notification_type
+        // (.message | if type == "string" then .[0:40] else empty end)
+        // empty' 2>/dev/null <&0)"
+fi
+case "$state" in
+    blocked) detail="${detail:-permission}"; [ "$detail" != "permission" ] && detail="allow $detail?" ;;
+    waiting) detail="waiting on you" ;;
+    working) detail="" ;;
+    done)    detail="" ;;
+esac
+
+tmux set-option -t "$session" @claude_state  "$state"      2>/dev/null
+tmux set-option -t "$session" @claude_pane   "$TMUX_PANE"  2>/dev/null
+tmux set-option -t "$session" @claude_detail "$detail"     2>/dev/null
+tmux set-option -t "$session" @claude_ts     "$(date +%s)" 2>/dev/null
+
+# Desktop notification only for the two states that actually want you back, and
+# only while nobody is looking at the session. `done` and `working` stay silent —
+# that split is the entire point of this script.
+case "$state" in
+    blocked|waiting)
+        if [ "$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached}' 2>/dev/null)" = "0" ] \
+           && command -v notify-send >/dev/null 2>&1; then
+            notify-send -a claude -i dialog-information -t 5000 \
+                "Claude · $session" "${detail:-needs your input}"
+        fi
+        ;;
+esac
+exit 0
