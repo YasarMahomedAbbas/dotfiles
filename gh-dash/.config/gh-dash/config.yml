@@ -78,8 +78,19 @@ defaults:
                 width: 20
                 hidden: true
     refetchIntervalMinutes: 30
-keybindings: {}
-repoPaths: {}
+keybindings:
+    prs:
+        - key: C
+          name: code review
+          command: >
+            cd {{.RepoPath}} 2>/dev/null;
+            tuicr pr {{.RepoName}}#{{.PrNumber}}
+repoPaths:
+    # local clones whose directory name differs from the repo name
+    YasarMahomedAbbas/meis-donations: /home/dracul/projects/personal/charity-site
+    YasarMahomedAbbas/lazytickets: /home/dracul/projects/personal/lazyissues
+    # everything else: repo name == directory name
+    YasarMahomedAbbas/*: /home/dracul/projects/personal/*
 theme:
     colors:
         text:
