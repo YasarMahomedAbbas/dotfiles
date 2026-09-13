@@ -2,10 +2,20 @@
 # include-d from ~/.config/mako/config. mako has no variables, so colors are
 # baked in here; criteria sections merge with the matching blocks in the main
 # config (which keep the timeouts/sizing).
-background-color=#${bg1}
+# ~90% opaque so Hyprland's layer blur (hyprland.conf, "notifications") frosts it
+background-color=#${bg1}e6
 text-color=#${fg1}
 border-color=#${accent}
-progress-color=over #${bg2}
+progress-color=over #${bg3}
+
+# Small dim app-name header, bold title, then body
+format=<span size="small" foreground="#${dim}">%a</span>\n<b>%s</b>\n%b
+
+[grouped]
+format=<span size="small" foreground="#${dim}">%a  ·  %g</span>\n<b>%s</b>\n%b
+
+[hidden]
+format=<span size="small" foreground="#${dim}">+%h more</span>
 
 [urgency=low]
 border-color=#${blue}
