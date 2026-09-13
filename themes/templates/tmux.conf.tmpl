@@ -37,15 +37,31 @@ set-option -g status-style bg=${BG},fg=${FG}
 # Show the window list centered between the left and the right section
 set-option -g status-justify centre
 
-# Left: session pill (frost-cyan text + icon; turns yellow while the prefix key is held)
+# Left: session pill (frost-cyan text + icon; turns yellow while the prefix key is
+# held) + the ticket pill naming what this session's ticket is FOR.
+#
+# The ticket pill prints ITSELF or nothing, on the same reasoning as the wt-dev pill
+# below. Both formats are passed to it deliberately: tmux caches a `#()` job by its
+# expanded command string, so a bare `#(ticket-pill)` would run once and paint one
+# session's ticket onto every attached session. The width has to come from here too —
+# `display-message -t` targets a pane, not a client, so the script cannot ask for its
+# own. It drops out on its own when the client is too narrow to afford it, which is
+# why the window list stays centred.
 set-option -g status-left "\
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_OPEN}\
 #[bg=${LIGHT_GRAY},fg=#{?client_prefix,${YELLOW},${CYAN}},bold] ${ICON_SESSION} #S \
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_CLOSE}\
+#[bg=default] \
+#(ticket-pill #{session_name} #{client_width})\
 "
 
-# Right: host pill + clock pill
+# Right: live-worktree pill + host pill + clock pill
+#
+# The wt-dev pill prints ITSELF (caps included) or nothing at all, because a pill
+# whose contents are empty still renders as a stray blob. It colours its own text
+# by health, so only the fg inside it varies; #{?...} can't branch on #() output.
 set-option -g status-right "\
+#(wt-dev tmux)\
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_OPEN}\
 #[bg=${LIGHT_GRAY},fg=${BLUE}] ${ICON_HOST} #h \
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_CLOSE}\
@@ -56,7 +72,10 @@ set-option -g status-right "\
 "
 
 # Set max length of left and right section
-set-option -g status-left-length 100
+# The left section now carries the ticket pill as well as the session pill, and a
+# section that overruns its length is truncated rather than wrapped — so this has to
+# cover the pill's own 62-char ceiling plus both sets of caps.
+set-option -g status-left-length 200
 set-option -g status-right-length 100
 
 # Inactive windows - muted text, no pill

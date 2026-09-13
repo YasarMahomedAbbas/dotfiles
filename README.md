@@ -14,7 +14,8 @@ repo is cloned.
 
 ```
 dotfiles/
-  bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-list-bells, sesh-preview, theme-switch, powermenu, gnome-powermenu)
+  bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-list-bells, sesh-preview, sesh-clean-name,
+                                        ticket-context, ticket-pill, claude-hook-state, pipeline-status, theme-switch, powermenu, gnome-powermenu)
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
@@ -102,6 +103,80 @@ you specify), so there are no per-project layout files to maintain:
 tmux-dev-layout <project-path> [--claude-dir DIR] ['dev||npm run dev'] ...
 ```
 
+#### Status column and the ticket card
+
+Running sessions carry a **branch** and a **status** column, and the ones that want you sort
+to the top:
+
+```
+ issue-559    feat/frontend/quotation-room-description   ⏸ plan-brief · doc-drift
+ issue-612    fix/frontend/wallet-statement-booked-by    ▶ implement-plan
+ travelsmart  develop                                    ▶ working
+ issue-705    main                                       ✓ PR
+ dotfiles
+```
+
+`⏸` red means a session has stopped and is waiting for you — a permission prompt, an idle
+session, or a `frontend-pipeline` run parked on a decision. `▶` amber is working, `✓` dim is
+finished. A turn merely *ending* is **not** an alert; getting that wrong is what used to make
+the bell fire at random during a long autonomous run.
+
+The preview pane is a **ticket card** — issue, one-line description, branch, position in the
+pipeline, checklist progress — rather than a dump of Claude's last output, because when you
+are scanning six sessions the question is which ticket this is and where it got to.
+
+Full reference — the state machine, the two writers (`pipeline-status`, `claude-hook-state`),
+the tmux options and how to add a consumer: **[docs/agent-status.md](docs/agent-status.md)**.
+
+### agent-sidebar — all agents at a glance (`<prefix>+a`)
+
+The picker answers "which session wants me" better than anything else here, but it is a
+place you *go*. `<prefix>+a` pins a narrow read-only pane down the left of the window
+carrying the same states, so the question gets answered without being asked:
+
+```
+ ▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▀
+ █▀█ █▄█ ██▄ █░▀█ ░█░ ▄█
+ ─────────────────────────────────── 22:47
+
+ ⏸ issue-915       merge develop? · raise-pr
+   agents must decide where a price item
+   comes from before deciding they want
+   one — blank and saved are two entries
+   ✓✓✓✓▶·  ████████████████████████████ 8/8
+
+▎▶ travelsmart                      working
+
+ idle
+ dotfiles · vault
+```
+
+`<prefix>+A` does the same for every window of the session, including ones opened later.
+It never takes focus and never reads a key — switching sessions stays the picker's job.
+
+Full reference — the card, the cost model, and where it deliberately disagrees with the
+picker about attached sessions: **[docs/agent-sidebar.md](docs/agent-sidebar.md)**.
+
+### wt-dev — one live worktree per project (`<prefix>+w`)
+
+Decides which git worktree owns a project's dev stack, and makes that choice visible. Every
+worktree wants the same host ports, so two stacks up means a half-started stack — or, worse,
+one branch's frontend silently talking to another branch's backend, because a browser-facing
+`http://localhost:5032` names the *host*, not the compose network.
+
+```bash
+wt-dev use issue-510    # make that worktree live and start it (returns immediately)
+wt-dev status           # what is live, across every project
+wt-dev doctor           # who holds the declared ports right now
+```
+
+`<prefix>+w` opens an fzf switcher across every registered project, and the pill on the right
+of the tmux status bar names whatever is currently live. A project opts in with a `.wtdev.toml`
+at its repo root — `compose` and `process` runners are both supported.
+
+Full reference — the guardrails, onboarding a project, state layout, and notes for extending
+it: **[docs/wt-dev.md](docs/wt-dev.md)**.
+
 ### wt-session
 
 Open or create a tmux dev session for a worktree/directory. Builds the same
@@ -123,8 +198,9 @@ bind <key> run-shell "tmux-cycle-layout"
 
 `streamdeck/` drives a 15-key Elgato Stream Deck (MK.2) as a live dashboard for the
 tmux + Claude workflow. The top row shows one key per tmux session (up to five),
-background-coloured by Claude status — red = needs you (`@claude_alert`), amber = working
-(`@claude_busy`), dim = idle — reusing the exact pane-ownership logic from `sesh-list-bells`
+background-coloured by Claude status — red = needs you (`@pipeline_state` `blocked`, or
+`@claude_state` `blocked`/`waiting`), amber = working, dim = idle — reusing the exact
+precedence and pane-ownership logic from `sesh-list-bells`
 so a misattributed option never lights a key. The attached session gets a cyan border. Press
 a session key to switch your terminal to it. The bottom row is actions: **PICK** (sesh popup),
 **THEME** (cycle `theme-switch`), **MIC** / **MUTE** (`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +

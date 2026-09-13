@@ -3,12 +3,15 @@
 streamdeck-dashboard — a physical dashboard for the tmux + Claude workflow on a
 15-key Stream Deck (MK.2 / Original, 3x5, 72x72px keys).
 
-Top row (keys 0-4): one key per tmux session, background coloured by Claude
-status — red = needs you (@claude_alert), amber = working (@claude_busy), dim =
-idle. The status logic mirrors sesh-list-bells: the flagged pane must still exist
-AND belong to that session, so a misattributed option never lights a key. The
-currently-attached session gets a cyan border. Press a session key to switch your
-terminal to it. Key 5 (MEDIA) opens the media page; key 6 (WORK) opens the work
+Top row (keys 0-4): one key per tmux session, background coloured by status — red =
+needs you, amber = working, green = a finished pipeline, dim slate = idle — over a
+band naming the pipeline stage or Claude's reason for wanting you ("plan-brief",
+"implement-plan", "allow Bash?"). The status logic mirrors sesh-list-bells:
+@pipeline_state first (the only source that can report a parked human decision),
+then @claude_state, whose flagged pane must still exist AND belong to that session
+so a misattributed option never lights a key. A turn merely ending is not an alert.
+The currently-attached session gets a cyan border. Press a session key to switch
+your terminal to it. Key 5 (MEDIA) opens the media page; key 6 (WORK) opens the work
 (project launcher) page; key 8 (VPS) opens the VPS page — one key per SSH host,
 each of which opens a fresh ghostty running `ssh <host>`.
 
@@ -93,6 +96,7 @@ VPS_HOSTS = [
 COLORS = {
     "alert":  (191, 97, 106),   # red   — needs attention
     "busy":   (235, 203, 139),  # amber — working
+    "done":   (86, 112, 82),    # muted green — pipeline finished, nothing to do
     "idle":   (42, 46, 56),     # dim slate
     "empty":  (12, 13, 16),     # near-black, no session
     "action": (27, 31, 39),     # action-key background
@@ -182,21 +186,64 @@ def list_sessions():
     return sorted(n for n in r.stdout.splitlines() if n)
 
 
-def pane_session(pane):
-    if not pane:
-        return None
-    return tmux("display-message", "-p", "-t", pane, "#{session_name}").stdout.strip()
+def session_states():
+    """{name: (status, label)} for every running session, in two tmux calls.
 
+    status is 'alert' | 'busy' | 'done' | 'idle'; label is the short bit of text the
+    key prints under the name ('plan-brief', 'implement-plan', 'allow Bash?'), or ''.
 
-def session_status(name):
-    """'alert' | 'busy' | 'idle' — with pane-ownership check (see sesh-list-bells)."""
-    ap = tmux("show-options", "-t", name, "-qv", "@claude_alert").stdout.strip()
-    if ap and pane_session(ap) == name:
-        return "alert"
-    bp = tmux("show-options", "-t", name, "-qv", "@claude_busy").stdout.strip()
-    if bp and pane_session(bp) == name:
-        return "busy"
-    return "idle"
+    Two sources, same precedence as sesh-list-bells. `pipeline-status` stamps
+    @pipeline_state / @pipeline_label on a frontend-pipeline run, and it is the only
+    thing that can say a human decision is parked: the Claude holding one ended its
+    turn exactly like a Claude that finished. Otherwise fall back to @claude_state,
+    written by Claude Code's own hooks via `claude-hook-state`, checking that the pane
+    it names still lives in this session — a stale id means the flag outlived the
+    Claude that set it.
+
+    `done` (the Stop hook, i.e. any turn ending) is deliberately NOT an alert. Stop
+    fires between every pipeline stage, where Claude carries straight on; treating it
+    as "needs you" is what used to light this dashboard red at random.
+
+    An attached session never shows a Claude alert: you are already looking at it, and
+    idle_prompt fires 60s after any turn ends. Pipeline states are exempt — they
+    describe the ticket, not your attention.
+
+    Batched deliberately: this runs on every poll (~1/s) for up to 5 session keys and
+    10 work-page keys, so a per-session show-options would be ~40 subprocess spawns a
+    second for a screenful of information that fits in one.
+    """
+    fmt = ("#{session_name}|#{@claude_state}|#{@claude_detail}|#{@claude_pane}"
+           "|#{@pipeline_state}|#{@pipeline_label}|#{session_attached}")
+    rows = tmux("list-sessions", "-F", fmt).stdout.splitlines()
+    live_panes = set()
+    for ln in tmux("list-panes", "-a", "-F", "#{session_name}|#{pane_id}").stdout.splitlines():
+        live_panes.add(ln.strip())
+
+    out = {}
+    for ln in rows:
+        parts = (ln.rstrip("\n").split("|") + [""] * 7)[:7]
+        name, cstate, cdetail, cpane, pstate, plabel, attached = parts
+        if not name:
+            continue
+        if pstate == "blocked":
+            out[name] = ("alert", plabel or "needs you")
+        elif pstate == "running":
+            out[name] = ("busy", plabel or "working")
+        elif pstate == "done":
+            out[name] = ("done", plabel or "done")
+        elif not cstate:
+            out[name] = ("idle", "")
+        elif attached not in ("", "0") and cstate in ("blocked", "waiting", "done"):
+            out[name] = ("idle", "")
+        elif cpane and f"{name}|{cpane}" not in live_panes:
+            out[name] = ("idle", "")
+        elif cstate in ("blocked", "waiting"):
+            out[name] = ("alert", cdetail or cstate)
+        elif cstate == "working":
+            out[name] = ("busy", cdetail or "")
+        else:
+            out[name] = ("idle", "")
+    return out
 
 
 def active_client():
@@ -391,20 +438,80 @@ def key_size(deck):
     return deck.key_image_format()["size"]
 
 
-def render_session(deck, name, status, attached):
+# The six pipeline stages, in the same short vocabulary the sesh picker's rail uses
+# (plan · build · review · docs · verify · PR), so the deck and the picker name a stage
+# the same way. A 72px key truncates "implement-plan" to "implement-p…", which wastes
+# the band on a word you already knew; "build" fits whole.
+STAGE_SHORT = {
+    "start-ticket": "plan",   "frontend-start-ticket": "plan",
+    "implement-plan": "build", "frontend-implement-plan": "build",
+    "review": "review",       "frontend-review": "review",
+    "doc-drift": "docs",      "frontend-doc-drift": "docs",
+    "human-verification": "verify",
+    "raise-pr": "PR",         "frontend-raise-pr": "PR",
+}
+
+
+def _short_label(label):
+    """Shorten a status label to something that fits a key band.
+
+    An escalation label is `<kind> · <stage>` (see frontend-pipeline's step 5), and the
+    kind is the half that says what is actually being asked — so when the whole thing
+    won't fit, the stage is what goes."""
+    if not label:
+        return ""
+    parts = [p.strip() for p in label.split("·")]
+    parts = [STAGE_SHORT.get(p, p) for p in parts]
+    short = " · ".join(p for p in parts if p)
+    return short if len(short) <= 16 else parts[0]
+
+
+def _fit(draw, text, f, maxw):
+    """Truncate to fit maxw, with an ellipsis when it doesn't."""
+    if draw.textlength(text, font=f) <= maxw:
+        return text
+    while text and draw.textlength(text + "…", font=f) > maxw:
+        text = text[:-1]
+    return (text + "…") if text else ""
+
+
+def render_session(deck, name, status, attached, label=""):
+    """A session key: the name (or the project's logo) over a band carrying the
+    pipeline stage or Claude's reason for wanting you — 'plan-brief', 'implement-plan',
+    'allow Bash?'. The colour already says needs-you / working / done; the band is what
+    says *which ticket state*, which is the thing you'd otherwise have to attach to
+    find out. Keys are 72x72, so the band is one truncated line and no more."""
     w, h = key_size(deck)
     img = Image.new("RGB", (w, h), COLORS[status if name else "empty"])
     d = ImageDraw.Draw(img)
+    label = _short_label(label)
     if name:
-        logo = load_logo((w, h), SESSION_LOGOS[name]) if name in SESSION_LOGOS else None
+        band = 18 if label else 0
+        body = (w, h - band)
+        logo = load_logo(body, SESSION_LOGOS[name]) if name in SESSION_LOGOS else None
         if logo:
-            img.paste(logo, (int((w - logo.width) / 2), int((h - logo.height) / 2)), logo)
+            img.paste(logo, (int((w - logo.width) / 2), int((h - band - logo.height) / 2)), logo)
         else:
             fg = (30, 30, 30) if status == "busy" else COLORS["text"]
-            _draw_wrapped(d, name, (w, h), fg, 15)
+            _draw_wrapped(d, name, body, fg, 15)
+        if label:
+            d.rectangle([0, h - band, w, h], fill=_shade(COLORS[status]))
+            f = font(11)
+            for fs in (11, 10, 9):
+                f = font(fs)
+                if d.textlength(label, font=f) <= w - 6:
+                    break
+            d.text((w / 2, h - band / 2), _fit(d, label, f, w - 6), font=f,
+                   fill=COLORS["text"], anchor="mm")
     if attached:
         d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["attach"], width=4)
     return PILHelper.to_native_key_format(deck, img)
+
+
+def _shade(rgb, factor=0.45):
+    """Darken a key background for the label band, so the band reads as part of the
+    same key rather than a second colour."""
+    return tuple(max(0, int(c * factor)) for c in rgb)
 
 
 def render_action(deck, glyph, label, active):
@@ -477,27 +584,53 @@ def render_theme(deck, name, active):
     return PILHelper.to_native_key_format(deck, img)
 
 
-def _draw_wrapped(draw, text, size, fill, fontsize):
+def _draw_wrapped(draw, text, size, fill, fontsize, minsize=10):
+    """Draw `text` centred in `size`, shrinking the font to keep it on ONE line
+    before resorting to wrapping.
+
+    The per-character wrap this used to do unconditionally split names mid-word at
+    the key's width — `issue-559` came out as "issue-5 / 59" and `dotfiles` as
+    "dotfile / s", which is harder to read at a glance than the same name two points
+    smaller. Try each size down to `minsize` first; only wrap when even the smallest
+    won't fit, and then prefer a break at a separator over a mid-word one."""
     w, h = size
-    f = font(fontsize)
-    # break into at most two lines that fit the key width
-    lines, cur = [], ""
-    for ch in text:
-        if draw.textlength(cur + ch, font=f) <= w - 8:
-            cur += ch
-        else:
-            lines.append(cur)
-            cur = ch
-        if len(lines) == 2:
+    avail = w - 8
+
+    for fs in range(fontsize, minsize - 1, -1):
+        f = font(fs)
+        if draw.textlength(text, font=f) <= avail:
+            draw.text((w / 2, h / 2), text, font=f, fill=fill, anchor="mm")
+            return
+
+    fs = minsize
+    f = font(fs)
+    # Prefer breaking where a human would: at the last separator that still fits.
+    head = ""
+    for i in range(len(text), 0, -1):
+        if text[i - 1] in "-_ ./" and draw.textlength(text[:i], font=f) <= avail:
+            head = text[:i]
             break
-    if cur and len(lines) < 2:
-        lines.append(cur)
-    lines = lines[:2]
-    total = len(lines) * (fontsize + 2)
-    y = (h - total) / 2 + fontsize / 2
+    if head:
+        lines = [head.rstrip(), text[len(head):]]
+    else:
+        lines, cur = [], ""
+        for ch in text:
+            if draw.textlength(cur + ch, font=f) <= avail:
+                cur += ch
+            else:
+                lines.append(cur)
+                cur = ch
+            if len(lines) == 2:
+                break
+        if cur and len(lines) < 2:
+            lines.append(cur)
+    lines = [ln for ln in lines[:2] if ln]
+
+    total = len(lines) * (fs + 2)
+    y = (h - total) / 2 + fs / 2
     for ln in lines:
         draw.text((w / 2, y), ln, font=f, fill=fill, anchor="mm")
-        y += fontsize + 2
+        y += fs + 2
 
 
 # ── main loop ────────────────────────────────────────────────────────────────
@@ -537,16 +670,32 @@ class Dashboard:
 
     def _refresh_main(self):
         sessions = list_sessions()
+        states = session_states()
         attached = attached_session()
+
+        # Alphabetical, so a key keeps its position and stays muscle memory. But the
+        # whole point of this row is that a glance tells you which agent needs you, so
+        # when there are more sessions than slots the alerting ones are guaranteed a
+        # place rather than falling off the end of the alphabet.
+        if len(sessions) > len(SESSION_SLOTS):
+            alerting = [n for n in sessions if states.get(n, ("idle", ""))[0] == "alert"]
+            rest = [n for n in sessions if n not in alerting]
+            keep = set(alerting[:len(SESSION_SLOTS)])
+            for n in rest:
+                if len(keep) >= len(SESSION_SLOTS):
+                    break
+                keep.add(n)
+            sessions = [n for n in sessions if n in keep]
+
         self.session_at = {}
         for i, key in enumerate(SESSION_SLOTS):
             name = sessions[i] if i < len(sessions) else None
             self.session_at[key] = name
-            status = session_status(name) if name else "empty"
+            status, label = states.get(name, ("idle", "")) if name else ("empty", "")
             is_attached = bool(name) and name == attached
-            self.set_key(key, ("s", name, status, is_attached),
-                         lambda n=name, s=status, a=is_attached:
-                             render_session(self.deck, n, s, a))
+            self.set_key(key, ("s", name, status, label, is_attached),
+                         lambda n=name, s=status, l=label, a=is_attached:
+                             render_session(self.deck, n, s, a, l))
         self._action(MEDIA_KEY, MEDIA_GLYPH, "MEDIA", False)
         self._action(WORK_KEY, WORK_GLYPH, "WORK", False)
         self._action(VPS_KEY, VPS_GLYPH, "VPS", False)
@@ -596,6 +745,7 @@ class Dashboard:
         self.session_at = {}
         self.work_at = {}
         live = set(list_sessions())
+        states = session_states()
         attached = attached_session()
         accent = current_accent()
         for i, key in enumerate(WORK_SLOTS):
@@ -607,7 +757,7 @@ class Dashboard:
             name, label, logo_file, glyph = proj
             self.work_at[key] = name
             is_live = name in live
-            status = session_status(name) if is_live else "idle"
+            status = states.get(name, ("idle", ""))[0] if is_live else "idle"
             is_attached = name == attached
             self.set_key(key, ("w", label, logo_file, glyph, accent, is_live, status, is_attached),
                          lambda l=label, lf=logo_file, g=glyph, a=accent, lv=is_live, s=status, at=is_attached:

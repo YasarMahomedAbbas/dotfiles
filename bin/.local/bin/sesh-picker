@@ -33,9 +33,8 @@ selected="$(
 )" || exit 0
 
 [ -z "$selected" ] && exit 0
-# Strip the trailing Claude status glyph — bell (U+F0F3) or chat bubble (U+F075)
-# — appended by sesh-list-bells before handing the line to `sesh connect`. fzf
-# --ansi already drops the colour escapes from its output, so only the glyph +
-# trailing space remain to remove.
-selected="$(printf '%s' "$selected" | sed -E 's/[[:space:]]*(\xef\x83\xb3|\xef\x81\xb5)[[:space:]]*$//')"
-exec sesh connect "$selected"
+# Strip the status column sesh-list-bells appended ("⏸ plan-brief", "▶ review") before
+# handing the line to `sesh connect`. It is free text now rather than a lone glyph, so
+# this goes through the shared cleaner rather than a local sed — three scripts strip
+# these rows and they must not drift.
+exec sesh connect "$(sesh-clean-name "$selected")"

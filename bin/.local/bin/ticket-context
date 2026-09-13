@@ -1,0 +1,165 @@
+#!/bin/bash
+# ticket-context — resolve what a frontend-pipeline working tree is actually doing.
+#
+# Usage:  ticket-context <dir|session-name>
+#
+# Emits shell-sourceable `key=value` lines (values single-quote escaped). Keys that
+# cannot be resolved are simply omitted, so every consumer must tolerate a blank.
+#
+#   dir root branch slug issue title problem folder
+#   stage stage_index stage_total stage_next
+#   tasks_done tasks_total checkpoint
+#   dirty commits
+#
+# The stage table is a transcription of the one in `frontend-pipeline/SKILL.md`
+# ("Detect the next stage") — the ticket folder is the pipeline's own log, so this
+# reads the same evidence the orchestrator does rather than keeping a second state
+# file that could disagree with it.
+#
+# Consumers: sesh-preview (the picker's ticket card). Kept out of sesh-list-bells
+# on purpose — the list runs this per row on every keystroke-reload, and the git
+# calls below are far too slow for that. The list uses window names only.
+
+set -u
+
+arg="${1:-$PWD}"
+dir=""
+
+# A tmux session name resolves to the working directory of its `claude` window
+# (falling back to the first window). tmux 3.7's `#{session_path}` is empty, so
+# the pane path is the only reliable source.
+if tmux has-session -t "=$arg" 2>/dev/null; then
+    dir="$(tmux list-windows -t "=$arg" -F '#{window_name}#{pane_current_path}' 2>/dev/null \
+           | sed -n 's/^claude//p' | head -1)"
+    [ -z "$dir" ] && dir="$(tmux list-windows -t "=$arg" -F '#{pane_current_path}' 2>/dev/null | head -1)"
+elif [ -d "$arg" ]; then
+    dir="$arg"
+fi
+
+[ -z "$dir" ] || [ ! -d "$dir" ] && exit 0
+
+emit() { [ -n "${2:-}" ] && printf "%s='%s'\n" "$1" "$(printf '%s' "$2" | sed "s/'/'\\\\''/g")"; }
+
+emit dir "$dir"
+
+root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || exit 0
+emit root "$root"
+
+branch="$(git -C "$dir" branch --show-current 2>/dev/null)"
+emit branch "$branch"
+
+# Branch format is `<type>/frontend/<slug>`; the slug is what names the ticket
+# folder. A detached HEAD or a placeholder branch (`issue-42`) yields no slug,
+# which is itself the signal that planning has not run yet.
+slug=""
+case "$branch" in
+    */frontend/*) slug="${branch##*/frontend/}" ;;
+esac
+emit slug "$slug"
+
+folder="" checklist="" notes=""
+if [ -n "$slug" ] && [ -d "$root/Docs/Frontend/tasks/$slug" ]; then
+    folder="$root/Docs/Frontend/tasks/$slug"
+    [ -f "$folder/TASK_CHECKLIST_$slug.md" ] && checklist="$folder/TASK_CHECKLIST_$slug.md"
+    [ -f "$folder/NOTES_$slug.md" ] && notes="$folder/NOTES_$slug.md"
+fi
+emit folder "$folder"
+
+# --- The one-line description --------------------------------------------------
+# The checklist's H1 is written as `# Task Checklist — <what this ticket is>`;
+# everything before the dash is boilerplate, so only the tail is worth showing.
+title="" issue=""
+if [ -n "$checklist" ]; then
+    title="$(head -1 "$checklist" | sed -E 's/^#+[[:space:]]*//; s/^Task Checklist[[:space:]]*[—-][[:space:]]*//')"
+    issue="$(grep -m1 -oE '^Issue:[[:space:]]*#[0-9]+' "$checklist" 2>/dev/null | grep -oE '[0-9]+')"
+fi
+# Fall back to the session/worktree name (`issue-830`) when there is no checklist yet.
+[ -z "$issue" ] && issue="$(printf '%s' "$dir" | grep -oE 'issue-[0-9]+' | head -1 | grep -oE '[0-9]+')"
+emit issue "$issue"
+emit title "$title"
+
+# --- The problem one-liner ------------------------------------------------------
+# What the ticket is FOR, in one sentence. `title` names the feature — "South
+# African money formatting" — which is only ever a reminder if you already
+# remember the ticket; coming back to a session cold, what you need is the thing
+# that is wrong. Three sources, in descending order of how deliberately each was
+# written as a problem statement:
+#
+#   1. `Problem: <one line>` — written by frontend-start-ticket. The only one of
+#      the three that is a problem statement by construction.
+#   2. the `Issue:` line's title — the GitHub issue title, which usually names the
+#      symptom. This is what every checklist written before the `Problem:` line
+#      existed falls back to, which is why none of them needed backfilling.
+#   3. `title`. Names the feature rather than the problem, but beats a blank.
+problem=""
+if [ -n "$checklist" ]; then
+    problem="$(grep -m1 -E '^Problem:' "$checklist" 2>/dev/null | sed -E 's/^Problem:[[:space:]]*//')"
+    # `Issue: #844 — <title> (<url>)` -> `<title>`. Each piece is stripped by its
+    # own expression because the older checklists in the tree write the line as
+    # `Issue(s): #252 <title>` with no dash and no URL, and both shapes have to
+    # land on the same answer.
+    # The `#<n>` is required, not incidental: a ticket with no GitHub issue writes
+    # the line as `Issue: none — handed over in session`, and the tail of that is
+    # bookkeeping about the ticket's provenance rather than anything about the work.
+    [ -z "$problem" ] && problem="$(grep -m1 -E '^Issue(\(s\))?:[[:space:]]*#[0-9]+' "$checklist" 2>/dev/null \
+        | sed -E 's/^Issue(\(s\))?:[[:space:]]*//; s/^#[0-9]+[[:space:]]*[—–-]?[[:space:]]*//; s/[[:space:]]*\(https?:[^)]*\)[[:space:]]*$//')"
+fi
+[ -z "$problem" ] && problem="$title"
+emit problem "$problem"
+
+# --- Where in the pipeline ------------------------------------------------------
+# NOTES section headings are the stage log: each stage appends its own. Match on
+# prefix, because a heading may carry a suffix (`## Implementation — Part 2 (#558)`).
+has() { [ -n "$notes" ] && grep -qE "^## $1" "$notes" 2>/dev/null; }
+
+stage="" stage_index=0
+if [ -z "$slug" ] || [ -z "$checklist" ]; then
+    stage="start-ticket";       stage_index=1
+elif ! has 'Implementation'; then
+    stage="implement-plan";     stage_index=2
+elif ! has 'Review'; then
+    stage="review";             stage_index=3
+elif ! has 'Doc drift'; then
+    stage="doc-drift";          stage_index=4
+elif ! has 'Human verification'; then
+    stage="human-verification"; stage_index=5
+else
+    stage="raise-pr";           stage_index=6
+fi
+emit stage "$stage"
+emit stage_index "$stage_index"
+emit stage_total 6
+
+# --- Checklist progress ---------------------------------------------------------
+# Two formats are in the wild: the current pipeline writes tasks as `### [x] 1.1 — …`
+# headings, older checklists as plain `- [x]` bullets. Prefer the heading form when
+# present: the bullet form is also used for non-task notes (gap lists, findings),
+# so counting it on a heading-style checklist would inflate the total.
+if [ -n "$checklist" ]; then
+    done_n="$(grep -cE '^### \[[xX]\]' "$checklist" 2>/dev/null)"
+    open_n="$(grep -cE '^### \[ \]' "$checklist" 2>/dev/null)"
+    if [ "$((done_n + open_n))" -eq 0 ]; then
+        done_n="$(grep -cE '^[[:space:]]*- \[[xX]\]' "$checklist" 2>/dev/null)"
+        open_n="$(grep -cE '^[[:space:]]*- \[ \]' "$checklist" 2>/dev/null)"
+    fi
+    emit tasks_done "$done_n"
+    emit tasks_total "$((done_n + open_n))"
+
+    # The active checkpoint is the last one whose heading precedes the first
+    # still-unchecked task; with none unchecked, the last checkpoint in the file.
+    first_open="$(grep -nE '^(### \[ \]|[[:space:]]*- \[ \])' "$checklist" 2>/dev/null | head -1 | cut -d: -f1)"
+    if [ -n "$first_open" ]; then
+        cp="$(head -n "$first_open" "$checklist" | grep -E '^## Checkpoint' | tail -1)"
+    else
+        cp="$(grep -E '^## Checkpoint' "$checklist" 2>/dev/null | tail -1)"
+    fi
+    # Drop the `· commit: \`…\`` tail — it is instruction, not status.
+    emit checkpoint "$(printf '%s' "$cp" | sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*·[[:space:]]*commit:.*$//')"
+fi
+
+# --- Working-tree state ---------------------------------------------------------
+emit dirty "$(git -C "$dir" status --porcelain 2>/dev/null | grep -c .)"
+base="$(git -C "$dir" rev-parse --verify -q origin/develop 2>/dev/null)"
+[ -n "$base" ] && emit commits "$(git -C "$dir" rev-list --count origin/develop..HEAD 2>/dev/null)"
+
+exit 0

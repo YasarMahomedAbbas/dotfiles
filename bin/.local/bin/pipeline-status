@@ -1,0 +1,60 @@
+#!/bin/bash
+# pipeline-status <running|blocked|done> <label> — announce where a frontend-pipeline
+# run has got to, for the sesh picker and the tmux status bar.
+#
+#   pipeline-status running implement-plan
+#   pipeline-status blocked plan-brief
+#   pipeline-status done    PR
+#
+# Called by the frontend-pipeline orchestrator at each stage boundary and each
+# escalation. It writes the same fact twice, on purpose:
+#
+#   - the window name (`issue-42 ▶ implement-plan`), which is what you read when
+#     you are already attached and looking at the status bar; and
+#   - @pipeline_state / @pipeline_label session options, which is what the picker
+#     reads, because a session's windows may be renamed or added to by anything.
+#
+# These are kept separate from @claude_state (claude-hook-state). Claude's own hooks
+# describe the *process* — is a turn running, is a permission prompt up — while this
+# describes the *pipeline*, which spans many turns and many subagents. A pipeline
+# parked on a plan-brief question has a Claude that ended its turn perfectly normally,
+# so only this can say that a human decision is outstanding; the picker prefers it.
+
+set -u
+state="${1:-}"; label="${2:-}"
+[ -z "${TMUX:-}" ] && exit 0
+
+# Resolve the session from THIS pane, not from the current client. `display-message -p`
+# with no target answers for whichever client tmux considers current, which with two
+# clients attached can be a different session entirely — the orchestrator would then
+# stamp its state onto someone else's session and rename their window. Same reason
+# claude-hook-state keys off $TMUX_PANE; fall back to the untargeted form only when the
+# variable is missing.
+target=""
+[ -n "${TMUX_PANE:-}" ] && target="$TMUX_PANE"
+if [ -n "$target" ]; then
+    session="$(tmux display-message -p -t "$target" '#{session_name}' 2>/dev/null)"
+else
+    session="$(tmux display-message -p '#{session_name}' 2>/dev/null)"
+fi
+[ -z "$session" ] && exit 0
+
+case "$state" in
+    running) mark='▶' ;;
+    blocked) mark='⏸' ;;
+    done)    mark='✓' ;;
+    "")      # clear
+        tmux set-option -t "$session" -u @pipeline_state 2>/dev/null
+        tmux set-option -t "$session" -u @pipeline_label 2>/dev/null
+        exit 0 ;;
+    *) echo "pipeline-status: unknown state '$state'" >&2; exit 1 ;;
+esac
+
+tmux set-option -t "$session" @pipeline_state "$state" 2>/dev/null
+tmux set-option -t "$session" @pipeline_label "$label" 2>/dev/null
+if [ -n "$target" ]; then
+    tmux rename-window -t "$target" "$session $mark $label" 2>/dev/null
+else
+    tmux rename-window "$session $mark $label" 2>/dev/null
+fi
+exit 0
