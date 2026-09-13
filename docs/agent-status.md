@@ -5,7 +5,8 @@ the `frontend-pipeline` skill. This is the machinery that answers, at a glance, 
 stopped and is waiting for a human* — and, once you know that, *what it is waiting about*.
 
 Sources: `bin/.local/bin/claude-hook-state`, `pipeline-status`, `ticket-context`,
-`sesh-list-bells`, `sesh-preview`, `sesh-clean-name`, `ticket-pill`, `agent-sidebar` (bash,
+`sesh-list-bells`, `sesh-preview`, `sesh-clean-name`, `ticket-pill`, `agent-sidebar`,
+`ticket-window` (bash,
 stowed with the rest of `bin`); consumed by the sesh picker (`<prefix>+s`), the tmux status
 bar, the [sidebar](agent-sidebar.md) (`<prefix>+a`) and the [Stream Deck](streamdeck.md).
 
@@ -172,6 +173,28 @@ attached *and* the `@claude_pane` window is the session's **active** window — 
 session is often attached on its `git` or `dev` window while Claude is blocked two
 windows over. Full reference: [agent-sidebar.md](agent-sidebar.md).
 
+### The ticket window
+
+The other surfaces say *which* session wants you; this one is for once you are in it. Every
+`issue-<n>` session gets a detached window named `ticket` running `nvim -R` on a rendered
+`ticket.md`: the problem line, then **the plan's summary** — NOTES' `## Planning` section
+(approach, what was decided with you, open risks) and one `✓ / ▶ / ·` line per checkpoint —
+then the GitHub issue and its comments.
+
+- **It exists from the first second.** lazytickets' worktree `setup` runs `ticket-window`
+  before `npm ci`, so the window lands while the install is still going — before planning
+  has run, which is exactly when the other surfaces used to have nothing to say.
+- **It follows the ticket folder.** A Claude `PostToolUse(Write|Edit)` hook
+  (`ticket-window --hook`) re-renders on every `TASK_CHECKLIST_` / `NOTES_` write, and nvim
+  re-checks the file every 2 s, so the summary moves as stages write. The hook replaced
+  `open-plan-in-nvim`, which split the *full* checklist in beside Claude — a document for the
+  implement stage, not for a human coming back to a session.
+- **Its files live in the worktree's private git dir** (`.git/worktrees/issue-<n>/ticket.{json,md,meta}`):
+  never committed, gone with `git worktree remove`. `ticket.meta` is also where
+  `ticket-context` gets a `title` before a checklist exists.
+- The window is tagged `@ticket_window`, not found by name; close it and a re-render will not
+  reopen it — only a plain `ticket-window` (which also refetches the issue) does.
+
 ### The Stream Deck
 
 One key per session, colour for the state and a band naming the stage. Full detail in
@@ -190,6 +213,11 @@ ticket-context issue-559          # or by tmux session name
 ticket-pill issue-559             # prints a tmux format string, or nothing
 rm -rf ~/.cache/ticket-pill       # force it to re-resolve on the next redraw
 
+# The ticket window (lazytickets setup and the Claude hook call these)
+ticket-window                     # in a worktree: refetch the issue, re-render, open the window if missing
+ticket-window --render            # re-render from the cached issue — no network
+ticket-window --hook              # PostToolUse(Write|Edit) entry point; JSON on stdin
+
 # Announce a pipeline transition (the orchestrator calls these; you rarely will)
 pipeline-status running implement-plan
 pipeline-status blocked "plan-brief · doc-drift"
@@ -205,7 +233,9 @@ claude-hook-state                         # clear (SessionEnd)
 `ticket-context` emits: `dir root branch slug issue title problem folder stage stage_index
 stage_total tasks_done tasks_total checkpoint dirty commits`. Its stage table is a
 transcription of the one in `frontend-pipeline/SKILL.md` — if that table changes, this must
-follow.
+follow. Before a checklist exists, `title` comes from the `ticket.meta` snapshot
+`ticket-window` took (the GitHub issue title), so `problem` — which falls back to `title` — is
+never blank on a ticket that is still in planning.
 
 ### `problem` — the one line that says what the ticket is for
 

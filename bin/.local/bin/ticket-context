@@ -16,7 +16,8 @@
 # reads the same evidence the orchestrator does rather than keeping a second state
 # file that could disagree with it.
 #
-# Consumers: sesh-preview (the picker's ticket card). Kept out of sesh-list-bells
+# Consumers: sesh-preview (the picker's ticket card), agent-sidebar, ticket-pill and
+# ticket-window (the ticket window's stage line and plan summary). Kept out of sesh-list-bells
 # on purpose — the list runs this per row on every keystroke-reload, and the git
 # calls below are far too slow for that. The list uses window names only.
 
@@ -72,6 +73,16 @@ title="" issue=""
 if [ -n "$checklist" ]; then
     title="$(head -1 "$checklist" | sed -E 's/^#+[[:space:]]*//; s/^Task Checklist[[:space:]]*[—-][[:space:]]*//')"
     issue="$(grep -m1 -oE '^Issue:[[:space:]]*#[0-9]+' "$checklist" 2>/dev/null | grep -oE '[0-9]+')"
+fi
+# No checklist yet: the issue title from the snapshot ticket-window took when the
+# session started, so a ticket still in planning (or parked on a planning question)
+# has a name on every card instead of a blank. `problem` falls through to it below.
+if [ -z "$title" ]; then
+    meta="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)/ticket.meta"
+    if [ -f "$meta" ]; then
+        title="$(sed -n 's/^title=//p' "$meta" | head -1)"
+        [ -z "$issue" ] && issue="$(sed -n 's/^issue=//p' "$meta" | head -1)"
+    fi
 fi
 # Fall back to the session/worktree name (`issue-830`) when there is no checklist yet.
 [ -z "$issue" ] && issue="$(printf '%s' "$dir" | grep -oE 'issue-[0-9]+' | head -1 | grep -oE '[0-9]+')"

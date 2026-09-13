@@ -1,0 +1,179 @@
+#!/bin/bash
+# ticket-window — the ticket a worktree is for, rendered and on screen from the
+# first second of the session, with the plan's summary on top once there is one.
+#
+# Usage:
+#   ticket-window [<dir>]           fetch the issue, render, open the `ticket` window
+#   ticket-window --render [<dir>]  re-render from the cached issue — no network,
+#                                   unless this tree has never been fetched
+#   ticket-window --hook            Claude PostToolUse(Write|Edit): re-render when a
+#                                   TASK_CHECKLIST_ / NOTES_ file changes (JSON on stdin)
+#
+# <dir> defaults to $PWD and must be inside an `issue-<n>` worktree; anywhere else
+# this is a silent no-op. Called first by lazytickets' worktree `setup` (so the
+# window lands before `npm ci` finishes) and by the hook, which re-renders the plan
+# summary as start-ticket and later stages write the ticket folder.
+#
+# Files, in the worktree's private git dir (e.g. .git/worktrees/issue-1075) — never
+# committed, gone with `git worktree remove`:
+#
+#   ticket.json  the `gh issue view` snapshot
+#   ticket.md    what the window shows: problem, plan summary, the issue, comments
+#   ticket.meta  `key=value` lines (issue title url state labels fetched) — read by
+#                ticket-context as the title before a checklist exists. Raw values,
+#                one per line; never sourced.
+#
+# Why a summary and not the checklist: the full plan is a working document for the
+# implement stage, and nobody reads it on screen. What you need coming back to a
+# session is what is wrong, what was decided, and how far along it is — the NOTES
+# `## Planning` section and the checkpoint rail, which is all this renders.
+#
+# Best-effort by design: it always exits 0, because it runs ahead of `npm ci` in a
+# `&&` chain and inside a hook, and a failed fetch must cost neither.
+
+set -u
+
+mode=fetch
+case "${1:-}" in
+    --render) mode=render; shift ;;
+    --hook)
+        file="$(jq -r '.tool_input.file_path // empty' 2>/dev/null)"
+        case "$file" in
+            */Docs/*/tasks/*/TASK_CHECKLIST_*.md|*/Docs/*/tasks/*/NOTES_*.md) ;;
+            *) exit 0 ;;
+        esac
+        # Detached, output closed: a hook must never hold Claude up, and the first
+        # one in a session started outside lazytickets still has a fetch to do.
+        "$0" --render "$(dirname "$file")" </dev/null >/dev/null 2>&1 &
+        exit 0 ;;
+esac
+
+dir="${1:-$PWD}"
+[ -d "$dir" ] || exit 0
+root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || exit 0
+gitdir="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null)" || exit 0
+issue="$(basename "$root" | grep -oE '^issue-[0-9]+$' | grep -oE '[0-9]+')"
+[ -z "$issue" ] && exit 0
+
+json="$gitdir/ticket.json" md="$gitdir/ticket.md" meta="$gitdir/ticket.meta"
+
+fetch() {
+    local tmp="$json.tmp"
+    if (cd "$root" && timeout 20 gh issue view "$issue" \
+            --json number,title,url,state,labels,body,comments) >"$tmp" 2>/dev/null \
+        && jq -e '.number' "$tmp" >/dev/null 2>&1; then
+        mv "$tmp" "$json"
+    else
+        rm -f "$tmp"; return 1
+    fi
+    jq -r --arg fetched "$(date '+%Y-%m-%d %H:%M')" '
+        "issue=\(.number)",
+        "title=\(.title | gsub("[\\r\\n]+"; " "))",
+        "url=\(.url)",
+        "state=\(.state)",
+        "labels=\([.labels[].name] | join(","))",
+        "fetched=\($fetched)"' "$json" >"$meta.tmp" && mv "$meta.tmp" "$meta"
+}
+
+# One line per checkpoint: ✓ all done, ▶ the first with work open, · after it.
+checkpoints() {
+    awk '
+    function flush(   mark) {
+        if (name == "") return
+        if (total > 0 && open == 0)  mark = "✓"
+        else if (open > 0 && !seen) { mark = "▶"; seen = 1 }
+        else                         mark = "·"
+        if (total > 0) printf "- %s %s — %d/%d\n", mark, name, total - open, total
+        else           printf "- %s %s\n", mark, name
+    }
+    /^## / {
+        flush(); name = ""
+        if ($0 ~ /^## Checkpoint/) {
+            name = $0; sub(/^## /, "", name); sub(/[[:space:]]*·[[:space:]]*commit:.*$/, "", name)
+            total = 0; open = 0
+        }
+        next
+    }
+    /^### \[[xX]\]/ { if (name != "") total++; next }
+    /^### \[ \]/    { if (name != "") { total++; open++ }; next }
+    END { flush() }' "$1"
+}
+
+render() {
+    local tc_problem="" tc_stage="" tc_stage_index="" tc_stage_total="" tc_folder="" tc_slug=""
+    local tc_tasks_done="" tc_tasks_total=""
+    # ticket-context escapes its values and emits fixed keys, so its output is
+    # safe to eval; the prefix keeps it from clobbering this script's variables.
+    eval "$(ticket-context "$dir" 2>/dev/null | sed 's/^/tc_/')"
+
+    local notes="" checklist="" planning="" rail=""
+    if [ -n "$tc_folder" ]; then
+        notes="$tc_folder/NOTES_$tc_slug.md"
+        checklist="$tc_folder/TASK_CHECKLIST_$tc_slug.md"
+        [ -f "$notes" ] && planning="$(awk '/^## Planning/ { f = 1; next } /^## / { f = 0 } f' "$notes" \
+            | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+        [ -f "$checklist" ] && rail="$(checkpoints "$checklist")"
+    fi
+
+    local title url state labels fetched
+    title="$(jq -r '.title' "$json")"
+    url="$(jq -r '.url' "$json")"
+    state="$(jq -r '.state | ascii_downcase' "$json")"
+    labels="$(jq -r '[.labels[].name] | join(" · ")' "$json")"
+    fetched="$(sed -n 's/^fetched=//p' "$meta" 2>/dev/null)"
+
+    {
+        printf '# #%s %s\n\n' "$issue" "$title"
+        [ -n "$tc_problem" ] && [ "$tc_problem" != "$title" ] && printf '> %s\n\n' "$tc_problem"
+        printf '%s' "$state"
+        [ -n "$labels" ] && printf ' · %s' "$labels"
+        [ -n "$tc_stage" ] && printf ' · stage **%s** (%s/%s)' "$tc_stage" "$tc_stage_index" "$tc_stage_total"
+        [ -n "$tc_tasks_total" ] && [ "$tc_tasks_total" != 0 ] && printf ' · tasks %s/%s' "$tc_tasks_done" "$tc_tasks_total"
+        printf '\n\n## Plan\n\n'
+        if [ -z "$planning" ] && [ -z "$rail" ]; then
+            printf '_Not planned yet — `frontend-start-ticket` fills this in._\n'
+        fi
+        [ -n "$planning" ] && printf '%s\n' "$planning"
+        [ -n "$rail" ] && printf '\n### Checkpoints\n\n%s\n' "$rail"
+        printf '\n---\n\n## Ticket\n\n'
+        jq -r '
+            def clean: (. // "") | gsub("\r"; "") | sub("\\s+$"; "");
+            (.body | clean),
+            (if (.comments | length) > 0 then
+                "\n---\n\n## Comments\n"
+                + ([.comments[] | "\n### @\(.author.login)\n\n\(.body | clean)\n"] | join(""))
+             else empty end)' "$json"
+        printf '\n\n_%s — fetched %s · run `ticket-window` to refetch_\n' "$url" "${fetched:-?}"
+    } >"$md.tmp" && mv "$md.tmp" "$md"
+}
+
+# The `ticket` window, beside Claude's, in this pane's session. Tagged with a
+# window option rather than found by name, because a window can be renamed. nvim
+# is read-only and re-checks the file every 2s, so a re-render shows up on its own.
+open_window() {
+    [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+    local session cwd wid
+    session="$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)" || return 0
+    [ -z "$session" ] && return 0
+    tmux list-windows -t "=$session" -F '#{@ticket_window}' 2>/dev/null | grep -qx 1 && return 0
+    cwd="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_current_path}' 2>/dev/null)"
+    # Argv form, not a command string: tmux then execs nvim directly instead of
+    # handing a quoted line to the login shell (fish), which parses it differently.
+    wid="$(tmux new-window -d -P -F '#{window_id}' -t "=$session:" -n ticket -c "${cwd:-$dir}" \
+        nvim -R -c "lua vim.fn.timer_start(2000, function() vim.cmd('silent! checktime') end, { ['repeat'] = -1 })" \
+        "$md" 2>/dev/null)" || return 0
+    tmux set-option -w -t "$wid" @ticket_window 1 2>/dev/null
+}
+
+case "$mode" in
+    fetch)
+        fetch
+        [ -f "$json" ] && render && open_window ;;
+    render)
+        if [ -f "$json" ]; then
+            render
+        else
+            fetch && render && open_window
+        fi ;;
+esac
+exit 0
