@@ -184,10 +184,14 @@ then the GitHub issue and its comments.
 - **It exists from the first second.** lazytickets' worktree `setup` runs `ticket-window`
   before `npm ci`, so the window lands while the install is still going — before planning
   has run, which is exactly when the other surfaces used to have nothing to say.
+- **Any Claude started in an issue worktree opens it too.** A `SessionStart` hook runs
+  `ticket-window` in the background, so a session bootstrapped by `/frontend-pipeline` (or
+  started by hand) gets the window without lazytickets, and a resumed one refetches the issue.
+  Outside an `issue-<n>` worktree it is a silent no-op.
 - **It follows the ticket folder.** A Claude `PostToolUse(Write|Edit)` hook
   (`ticket-window --hook`) re-renders on every `TASK_CHECKLIST_` / `NOTES_` write, and nvim
   re-checks the file every 2 s, so the summary moves as stages write. The hook replaced
-  `open-plan-in-nvim`, which split the *full* checklist in beside Claude — a document for the
+  `open-plan-in-nvim` (since deleted), which split the *full* checklist in beside Claude — a document for the
   implement stage, not for a human coming back to a session.
 - **Its files live in the worktree's private git dir** (`.git/worktrees/issue-<n>/ticket.{json,md,meta}`):
   never committed, gone with `git worktree remove`. `ticket.meta` is also where
