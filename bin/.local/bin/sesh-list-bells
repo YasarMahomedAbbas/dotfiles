@@ -31,8 +31,17 @@
 # permission prompt (immediate) and Notification/idle_prompt (~60s after a turn with
 # no input from you) are alerts.
 #
-# Rows are emitted alerts → busy → everything else, each group keeping sesh's own
-# relative order, so a session waiting on you floats to the top of the picker.
+# Row order is FIXED — it never changes when you switch sessions or a Claude changes
+# state, so you can find things by position. sesh's own order is most-recently-used,
+# which reshuffles the list on every switch, so it is thrown away for tmux rows:
+#
+#   1. running tmux sessions, ALWAYS above everything else, in the order
+#        `sesh-order sort` gives: your manual order (alt-k / alt-j in the picker),
+#        then sesh.toml order, then A–Z
+#   2. config rows, in sesh.toml order
+#   3. zoxide rows, in sesh's order
+#
+# Status is a column only; it deliberately does not move a row.
 #
 # All `sesh list` flags pass straight through. Only rows that are genuine tmux
 # sessions may be decorated: `sesh list` mixes in config and zoxide rows, and a
@@ -131,37 +140,38 @@ status_for() {
 vis() { printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g'; }
 
 # --- Collect, measuring the two columns as we go --------------------------------
-# Rows are held as  rank \t line \t branch \t status  and padded only once the widest
-# name and branch across the whole list are known.
-rows=(); namewidth=0; branchwidth=0
+# Running sessions are held as  name \t line \t branch \t status  and padded only once
+# the widest name and branch across the whole list are known. Config / zoxide rows
+# are never decorated and keep sesh's order, so they are held as-is.
+rows=(); others=(); namewidth=0; branchwidth=0
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     if ! printf '%s\n' "$session_rows" | grep -qxF -- "$line"; then
-        rows+=("3"$'\t'"$line"$'\t'$'\t'); continue   # config / zoxide row — never decorated
+        others+=("$line"); continue
     fi
     name="$(sesh-clean-name "$line")"
     branch="$(branch_for "$name")"
     st="$(status_for "$name")"
-    rank="3"; text=""
-    if [ -n "$st" ]; then rank="${st%%$'\t'*}"; text="${st#*$'\t'}"; fi
+    text=""
+    [ -n "$st" ] && text="${st#*$'\t'}"
 
     v="$(vis "$line")";   [ "${#v}" -gt "$namewidth" ]   && namewidth="${#v}"
     [ "${#branch}" -gt "$branchwidth" ] && branchwidth="${#branch}"
-    rows+=("$rank"$'\t'"$line"$'\t'"$branch"$'\t'"$text")
+    rows+=("$name"$'\t'"$line"$'\t'"$branch"$'\t'"$text")
 done < <(sesh list "$@")
 
 [ "$namewidth"   -gt 30 ] && namewidth=30
 [ "$branchwidth" -gt 46 ] && branchwidth=46
 
-emit_rank() {
-    local want="$1" rank line branch text pad v
-    for r in "${rows[@]}"; do
-        IFS=$'\t' read -r rank line branch text <<< "$r"
-        [ "$rank" != "$want" ] && continue
+if [ "${#rows[@]}" -gt 0 ]; then
+    # Join each row back onto its name in `sesh-order sort` order.
+    printf '%s\n' "${rows[@]}" | cut -f1 | sesh-order sort |
+    while IFS= read -r n; do
+        IFS=$'\t' read -r _ line branch text < <(printf '%s\n' "${rows[@]}" | awk -F'\t' -v n="$n" '$1 == n { print; exit }')
         if [ -z "$branch" ] && [ -z "$text" ]; then
             printf '%s\n' "$line"; continue
         fi
-        local v; v="$(vis "$line")"
+        v="$(vis "$line")"
         pad=$(( namewidth - ${#v} + 2 )); [ "$pad" -lt 2 ] && pad=2
         printf '%s%*s' "$line" "$pad" ""
         if [ -n "$text" ]; then
@@ -170,5 +180,5 @@ emit_rank() {
             printf '%s%s%s\n' "$C_BRANCH" "$branch" "$C_OFF"
         fi
     done
-}
-for k in 0 1 3 2; do emit_rank "$k"; done
+fi
+[ "${#others[@]}" -gt 0 ] && printf '%s\n' "${others[@]}"

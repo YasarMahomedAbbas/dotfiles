@@ -15,18 +15,25 @@ prompt="$(printf '   ')"     # U+F002 magnifier
 pointer="$(printf '')"        # U+F0DA caret
 label="$(printf '  sesh ')"   # U+F120 terminal
 
+# alt-k / alt-j / alt-t reorder running sessions (saved by sesh-order, so the order
+# sticks across picker opens). track-current + --id-nth (icon + name) keeps the cursor
+# on the session being moved across the reload, so repeated presses keep moving it.
 selected="$(
   sesh-list-bells --icons | fzf \
     --ansi --no-sort --reverse --height 100% \
     --border=rounded --border-label "$label" \
     --prompt "$prompt" --pointer "$pointer" \
     --color="$SESH_FZF_COLORS" \
-    --header 'ctrl-a all | ctrl-t tmux | ctrl-c config | ctrl-x zoxide | ctrl-d kill' \
+    --header 'ctrl-a all | ctrl-t tmux | ctrl-c config | ctrl-x zoxide | ctrl-d kill | alt-k/j move | alt-t top' \
     --bind 'tab:down,btab:up' \
     --bind 'ctrl-a:reload(sesh-list-bells --icons)' \
     --bind 'ctrl-t:reload(sesh-list-bells -t --icons)' \
     --bind 'ctrl-c:reload(sesh-list-bells -c --icons)' \
     --bind 'ctrl-x:reload(sesh-list-bells -z --icons)' \
+    --id-nth 1,2 \
+    --bind 'alt-k:execute-silent(sesh-order move {} up)+track-current+reload(sesh-list-bells --icons)' \
+    --bind 'alt-j:execute-silent(sesh-order move {} down)+track-current+reload(sesh-list-bells --icons)' \
+    --bind 'alt-t:execute-silent(sesh-order move {} top)+track-current+reload(sesh-list-bells --icons)' \
     --bind 'ctrl-d:execute-silent(tmux kill-session -t "=$(sesh-clean-name {})" 2>/dev/null)+reload(sesh-list-bells --icons)' \
     --preview 'sesh-preview {}' \
     --preview-window 'right:55%,border-left'

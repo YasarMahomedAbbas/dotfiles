@@ -1,0 +1,66 @@
+#!/bin/bash
+# The sesh picker's manual session order — the single place that decides where a
+# running session sits, so the picker never reshuffles on its own.
+#
+#   sesh-order sort           read session names on stdin, print them in picker order
+#   sesh-order move <row> up|down|top
+#                             move a running session one slot (or to the top);
+#                             <row> is a raw picker line, cleaned via sesh-clean-name
+#
+# Order, first match wins:
+#   1. your manual order   ~/.local/state/sesh/order, one name per line
+#   2. sesh.toml order     configured projects you haven't placed by hand
+#   3. A–Z                 everything else (issue-*, ad-hoc sessions)
+#
+# A move writes out the whole running order, so after the first move every running
+# session is pinned where you see it. Names of sessions that aren't running are kept
+# in the file (after the running ones), so a killed-and-recreated session comes back
+# near where it was rather than falling to the A–Z tail.
+
+order_file="${XDG_STATE_HOME:-$HOME/.local/state}/sesh/order"
+
+sort_names() {
+    local manual config
+    manual="$(cat "$order_file" 2>/dev/null)"
+    config="$(sesh list -c 2>/dev/null)"
+    while IFS= read -r n; do
+        [ -z "$n" ] && continue
+        local i
+        if i="$(printf '%s\n' "$manual" | grep -nxF -m1 -- "$n" | cut -d: -f1)" && [ -n "$i" ]; then
+            printf '0|%04d\t%s\n' "$i" "$n"
+        elif i="$(printf '%s\n' "$config" | grep -nxF -m1 -- "$n" | cut -d: -f1)" && [ -n "$i" ]; then
+            printf '1|%04d\t%s\n' "$i" "$n"
+        else
+            printf '2|%s\t%s\n' "$n" "$n"
+        fi
+    done | LC_ALL=C sort -t$'\t' -k1,1 | cut -f2-
+}
+
+case "$1" in
+    sort) sort_names ;;
+    move)
+        name="$(sesh-clean-name "$2")"
+        dir="$3"
+        tmux has-session -t "=$name" 2>/dev/null || exit 0   # config / zoxide row: nothing to move
+        mapfile -t cur < <(tmux list-sessions -F '#{session_name}' | sort_names)
+        for i in "${!cur[@]}"; do [ "${cur[$i]}" = "$name" ] && idx="$i"; done
+        [ -z "$idx" ] && exit 0
+        case "$dir" in
+            up)   j=$((idx - 1)) ;;
+            down) j=$((idx + 1)) ;;
+            top)  cur=("$name" "${cur[@]:0:idx}" "${cur[@]:idx+1}"); j="" ;;
+            *)    echo "usage: sesh-order move <row> up|down|top" >&2; exit 2 ;;
+        esac
+        if [ -n "$j" ]; then
+            [ "$j" -lt 0 ] || [ "$j" -ge "${#cur[@]}" ] && exit 0
+            tmp="${cur[$idx]}"; cur[$idx]="${cur[$j]}"; cur[$j]="$tmp"
+        fi
+        mkdir -p "$(dirname "$order_file")"
+        {
+            printf '%s\n' "${cur[@]}"
+            # keep placed-but-not-running names, in their existing relative order
+            grep -vxF -f <(printf '%s\n' "${cur[@]}") "$order_file" 2>/dev/null || true
+        } > "$order_file.tmp" && mv "$order_file.tmp" "$order_file"
+        ;;
+    *) echo "usage: sesh-order sort | move <row> up|down|top" >&2; exit 2 ;;
+esac
