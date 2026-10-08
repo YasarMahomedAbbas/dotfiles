@@ -31,6 +31,9 @@ Singleton {
     property color purple:  "#b48ead"
     property color muted:   "#3b4252"
 
+    // `c` at opacity `a` — for tints and soft fills of the palette colours
+    function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
+
     function apply(data) {
         for (var k in data)
             if (root.hasOwnProperty(k))
