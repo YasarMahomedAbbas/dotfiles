@@ -1,0 +1,11 @@
+{
+  "name": "dotfiles-mods",
+  "owner": { "name": "yasarmahomedabbas" },
+  "plugins": [
+    {
+      "name": "agent-board",
+      "source": "./agent-board",
+      "description": "Writes a per-session status file (~/.cache/claude-board/<pane>.json) for the agent board: state, attention, current tool, agents, shells, tasks and designs."
+    }
+  ]
+}
