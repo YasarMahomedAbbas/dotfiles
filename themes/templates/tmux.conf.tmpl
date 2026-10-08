@@ -55,12 +55,25 @@ set-option -g status-left "\
 #(ticket-pill #{session_name} #{client_width})\
 "
 
-# Right: live-worktree pill + host pill + clock pill
+# Right: agent-board pill + live-worktree pill + host pill + clock pill
 #
-# The wt-dev pill prints ITSELF (caps included) or nothing at all, because a pill
-# whose contents are empty still renders as a stray blob. It colours its own text
-# by health, so only the fg inside it varies; #{?...} can't branch on #() output.
+# The board pill (`board pill`) says how many Claude sessions need you / are working /
+# run in the background: `● 2 needs you` on red, then `▶ 1 ◐ 3`. The wt-dev pill names
+# the live worktree. Both print ITSELF (caps included) or nothing at all, because a
+# pill whose contents are empty still renders as a stray blob. Each colours its own
+# text, so only the fg inside it varies; #{?...} can't branch on #() output.
+#
+# Under Hyprland the quickshell bar already shows the host and the clock, so the two
+# pills are dropped there and kept everywhere else (a tty, ssh, another WM). if-shell
+# runs in the tmux server's environment, which is the session it was started from.
+if-shell '[ -n "$HYPRLAND_INSTANCE_SIGNATURE" ]' {
 set-option -g status-right "\
+#(board pill)\
+#(wt-dev tmux)\
+"
+} {
+set-option -g status-right "\
+#(board pill)\
 #(wt-dev tmux)\
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_OPEN}\
 #[bg=${LIGHT_GRAY},fg=${BLUE}] ${ICON_HOST} #h \
@@ -70,13 +83,14 @@ set-option -g status-right "\
 #[bg=${LIGHT_GRAY},fg=${CYAN}] ${ICON_CLOCK} %H:%M \
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_CLOSE}\
 "
+}
 
 # Set max length of left and right section
 # The left section now carries the ticket pill as well as the session pill, and a
 # section that overruns its length is truncated rather than wrapped — so this has to
 # cover the pill's own 62-char ceiling plus both sets of caps.
 set-option -g status-left-length 200
-set-option -g status-right-length 100
+set-option -g status-right-length 160
 
 # Inactive windows - muted text, no pill
 set-option -g window-status-format "#[fg=${MUTED}] #I #W "

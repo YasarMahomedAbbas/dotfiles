@@ -15,7 +15,7 @@ repo is cloned.
 ```
 dotfiles/
   bin/        → ~/.local/bin/          (work, tmux-dev-layout, tmux-cycle-layout, sesh-picker, sesh-list-bells, sesh-preview, sesh-clean-name,
-                                        ticket-context, ticket-pill, claude-hook-state, pipeline-status, theme-switch, powermenu, gnome-powermenu)
+                                        ticket-context, ticket-pill, board, pipeline-status, theme-switch, powermenu, gnome-powermenu)
   gh-dash/    → ~/.config/gh-dash/
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
@@ -109,53 +109,39 @@ Running sessions carry a **branch** and a **status** column, and the ones that w
 to the top:
 
 ```
- issue-559    feat/frontend/quotation-room-description   ⏸ plan-brief · doc-drift
- issue-612    fix/frontend/wallet-statement-booked-by    ▶ implement-plan
- travelsmart  develop                                    ▶ working
- issue-705    main                                       ✓ PR
+ issue-559    feat/frontend/quotation-room-description   ● needs you · Results
+ issue-612    fix/frontend/wallet-statement-booked-by    ▶ pnpm test 3m
+ travelsmart  develop                                    ◐ background · 2 agents
+ issue-705    main                                       ✓ unseen
  dotfiles
 ```
 
-`⏸` red means a session has stopped and is waiting for you — a permission prompt, an idle
-session, or a `frontend-pipeline` run parked on a decision. `▶` amber is working, `✓` dim is
-finished. A turn merely *ending* is **not** an alert; getting that wrong is what used to make
-the bell fire at random during a long autonomous run.
+The status comes from the agent board (`board list --json`): `●` red = Claude is blocked on
+you (permission, question, plan approval), `▶` = a turn is running (yellow + `slow` once it
+runs past its typical time), `◐` blue = agents or shells still run after the turn, `✓` green
+= finished since you last looked. Idle shows nothing.
 
 The preview pane is a **ticket card** — issue, one-line description, branch, position in the
 pipeline, checklist progress — rather than a dump of Claude's last output, because when you
 are scanning six sessions the question is which ticket this is and where it got to.
 
-Full reference — the state machine, the two writers (`pipeline-status`, `claude-hook-state`),
-the tmux options and how to add a consumer: **[docs/agent-status.md](docs/agent-status.md)**.
+Full reference — the state files, the `board` CLI and every surface that reads it:
+**[docs/agent-board.md](docs/agent-board.md)**.
 
-### agent-sidebar — all agents at a glance (`<prefix>+a`)
+### board — the agent board (`<prefix>+i`)
 
-The picker answers "which session wants me" better than anything else here, but it is a
-place you *go*. `<prefix>+a` pins a narrow read-only pane down the left of the window
-carrying the same states, so the question gets answered without being asked:
+Every Claude session, who needs you, what each is doing, its ticket and its dev stack, from
+one source of truth (state files written by a Claude mod). `<prefix>+i` opens the roster
+popup (⏎ jump, 1-9 answer, `s s` switch the dev stack, `v`/`y` design, `?` keys); the tmux
+status bar carries `● N needs you  ▶ N ◐ N`.
 
-```
- ▄▀█ █▀▀ █▀▀ █▄░█ ▀█▀ █▀
- █▀█ █▄█ ██▄ █░▀█ ░█░ ▄█
- ─────────────────────────────────── 22:47
-
- ⏸ issue-915       merge develop? · raise-pr
-   agents must decide where a price item
-   comes from before deciding they want
-   one — blank and saved are two entries
-   ✓✓✓✓▶·  ████████████████████████████ 8/8
-
-▎▶ travelsmart                      working
-
- idle
- dotfiles · vault
+```bash
+board list            # sessions, most urgent first (--json for scripts)
+board next            # jump to the oldest session that needs you
+board stack <key>     # what switching the dev stack here would do (--yes to do it)
 ```
 
-`<prefix>+A` does the same for every window of the session, including ones opened later.
-It never takes focus and never reads a key — switching sessions stays the picker's job.
-
-Full reference — the card, the cost model, and where it deliberately disagrees with the
-picker about attached sessions: **[docs/agent-sidebar.md](docs/agent-sidebar.md)**.
+Full reference: **[docs/agent-board.md](docs/agent-board.md)**.
 
 ### wt-dev — one live worktree per project (`<prefix>+w`)
 
@@ -198,11 +184,10 @@ bind <key> run-shell "tmux-cycle-layout"
 
 `streamdeck/` drives a 15-key Elgato Stream Deck (MK.2) as a live dashboard for the
 tmux + Claude workflow. The top row shows one key per tmux session (up to five),
-background-coloured by Claude status — red = needs you (`@pipeline_state` `blocked`, or
-`@claude_state` `blocked`/`waiting`), amber = working, dim = idle — reusing the exact
-precedence and pane-ownership logic from `sesh-list-bells`
-so a misattributed option never lights a key. The attached session gets a cyan border. Press
-a session key to switch your terminal to it. The bottom row is actions: **PICK** (sesh popup),
+background-coloured by its most urgent Claude from `board list --json` — red = needs you,
+frost = working, yellow = slow, blue = background agents, green = finished and unseen, dim =
+idle. The attached session gets a cyan border. Press a session key to `board jump` to that
+Claude; a **DESIGN** key lights in the accent colour when a design canvas exists and opens it. The bottom row is actions: **PICK** (sesh popup),
 **THEME** (cycle `theme-switch`), **MIC** / **MUTE** (`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
 `wpctl` volume), a **WORK** key opens a project launcher — one key per configured project
 (logo + name, bordered by its live session state) that create-or-switches via `sesh connect`,

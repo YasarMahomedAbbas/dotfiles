@@ -3,17 +3,17 @@
 streamdeck-dashboard — a physical dashboard for the tmux + Claude workflow on a
 15-key Stream Deck (MK.2 / Original, 3x5, 72x72px keys).
 
-Top row (keys 0-4): one key per tmux session, background coloured by status — red =
-needs you, amber = working, green = a finished pipeline, dim slate = idle — over a
-band naming the pipeline stage or Claude's reason for wanting you ("plan-brief",
-"implement-plan", "allow Bash?"). The status logic mirrors sesh-list-bells:
-@pipeline_state first (the only source that can report a parked human decision),
-then @claude_state, whose flagged pane must still exist AND belong to that session
-so a misattributed option never lights a key. A turn merely ending is not an alert.
-The currently-attached session gets a cyan border. Press a session key to switch
-your terminal to it. Key 5 (MEDIA) opens the media page; key 6 (WORK) opens the work
-(project launcher) page; key 8 (VPS) opens the VPS page — one key per SSH host,
-each of which opens a fresh ghostty running `ssh <host>`.
+Top row (keys 0-4): one key per tmux session, background coloured by its most urgent
+Claude from the agent board (`board list --json`, docs/agent-board.md §4) — red =
+needs you, frost = working, yellow = working past its typical time, steel blue =
+background agents, green = finished and unseen, dim slate = idle — over a band
+naming what it wants or does ("Results", "build", "2 agents"). The currently-attached
+session gets a cyan border. Press a session key to `board jump` to that Claude's pane
+(or switch to the session when no Claude runs there). Key 5 (MEDIA) opens the media
+page; key 6 (WORK) opens the work (project launcher) page; key 8 (VPS) opens the VPS
+page — one key per SSH host, each of which opens a fresh ghostty running `ssh <host>`.
+Key 9 (DESIGN) lights in the theme accent when any session has published a design
+canvas, and opens the newest one (`board design`).
 
 Bottom row: PICK (sesh popup, key 10) · THEME (picker page, key 11) · MIC (mic
 mute, key 13) · MUTE (output mute, key 14). MIC/MUTE reflect live
@@ -22,12 +22,13 @@ of the available theme-switch palettes (each key previews its own colours); WORK
 opens a launcher of the configured projects (each key shows its logo/glyph and a
 border for the session's live state) that create-or-switch via `sesh connect`.
 
-Runs as a systemd user service (streamdeck-dashboard.service). Polls tmux ~1x/s
+Runs as a systemd user service (streamdeck-dashboard.service). Polls ~1x/s
 and only redraws keys whose appearance actually changed, so USB traffic stays low.
 The interpreter is the venv at ~/.local/share/streamdeck-dashboard/venv (created
 by the install step); the systemd unit points ExecStart at it.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -53,6 +54,7 @@ SESSION_SLOTS = list(range(5))  # keys 0-4 -> sessions (top row only)
 MEDIA_KEY = 5                   # key 5 opens the media page (freed middle row)
 WORK_KEY = 6                    # key 6 opens the work (projects) page
 VPS_KEY = 8                     # key 8 opens the VPS (ssh launcher) page
+DESIGN_KEY = 9                  # key 9 opens the newest design canvas (board design)
 THEME_KEY = 11                  # THEME action key opens the theme picker page
 THEME_SLOTS = list(range(10))   # theme-picker page: keys 0-9 -> themes
 THEME_BACK_KEY = 10             # theme-picker page: BACK
@@ -94,9 +96,12 @@ VPS_HOSTS = [
 
 # Fallback palette (Nord-ish); live values pulled from the active theme below.
 COLORS = {
-    "alert":  (191, 97, 106),   # red   — needs attention
-    "busy":   (235, 203, 139),  # amber — working
-    "done":   (86, 112, 82),    # muted green — pipeline finished, nothing to do
+    "alert":  (191, 97, 106),   # red   — needs you
+    "busy":   (236, 239, 244),  # fg0 (frost) — working
+    "slow":   (235, 203, 139),  # yellow — working past its typical time
+    "background": (129, 161, 193),  # blue — turn ended, agents/shells still run
+    "done":   (163, 190, 140),  # green — finished since you last looked (unseen)
+    "design": (136, 192, 208),  # accent — a design canvas exists
     "idle":   (42, 46, 56),     # dim slate
     "empty":  (12, 13, 16),     # near-black, no session
     "action": (27, 31, 39),     # action-key background
@@ -150,16 +155,35 @@ def tmux(*args):
 
 # ── theme colours (reuse ~/.config/theme/sesh-colors.sh) ─────────────────────
 def load_theme():
+    """Status colours per docs/agent-board.md §4, from sesh-colors.sh. fg0 / blue were
+    added there with the board; until the next theme-switch they come from the fzf
+    colour string (fg+ is fg0, prompt is blue)."""
     f = Path.home() / ".config/theme/sesh-colors.sh"
+    vals = {}
     try:
         for line in f.read_text().splitlines():
             line = line.strip().removeprefix("export ").strip()
-            if line.startswith("SESH_BELL_COLOR="):
-                COLORS["alert"] = COLORS["on"] = _hex(line.split("=", 1)[1])
-            elif line.startswith("SESH_BUSY_COLOR="):
-                COLORS["busy"] = _hex(line.split("=", 1)[1])
+            k, eq, v = line.partition("=")
+            if eq:
+                vals[k] = v.strip().strip('"').strip("'")
     except FileNotFoundError:
-        pass
+        return
+    fzf = dict(p.split(":", 1) for p in vals.get("SESH_FZF_COLORS", "").split(",") if ":" in p)
+    roles = {
+        "alert": vals.get("SESH_BELL_COLOR"),
+        "slow": vals.get("SESH_BUSY_COLOR"),
+        "done": vals.get("SESH_OK_COLOR"),
+        "design": vals.get("SESH_ACCENT_COLOR"),
+        "busy": vals.get("SESH_FG0_COLOR") or fzf.get("fg+"),
+        "background": vals.get("SESH_BLUE_COLOR") or fzf.get("prompt"),
+    }
+    for role, h in roles.items():
+        if h:
+            try:
+                COLORS[role] = _hex(h)
+            except ValueError:
+                pass
+    COLORS["on"] = COLORS["alert"]
 
 
 def _hex(s):
@@ -186,64 +210,73 @@ def list_sessions():
     return sorted(n for n in r.stdout.splitlines() if n)
 
 
-def session_states():
-    """{name: (status, label)} for every running session, in two tmux calls.
+def board_entries():
+    """`board list --json`: every Claude session, most urgent first (docs/agent-board.md)."""
+    r = sh("board", "list", "--json", timeout=8)
+    if r.returncode != 0:
+        return []
+    try:
+        data = json.loads(r.stdout)
+    except ValueError:
+        return []
+    return [e for e in data if isinstance(e, dict) and not e.get("stale")]
 
-    status is 'alert' | 'busy' | 'done' | 'idle'; label is the short bit of text the
-    key prints under the name ('plan-brief', 'implement-plan', 'allow Bash?'), or ''.
 
-    Two sources, same precedence as sesh-list-bells. `pipeline-status` stamps
-    @pipeline_state / @pipeline_label on a frontend-pipeline run, and it is the only
-    thing that can say a human decision is parked: the Claude holding one ended its
-    turn exactly like a Claude that finished. Otherwise fall back to @claude_state,
-    written by Claude Code's own hooks via `claude-hook-state`, checking that the pane
-    it names still lives in this session — a stale id means the flag outlived the
-    Claude that set it.
+def _board_label(e):
+    """The key band: what the session wants, or what it is doing, in a word or two."""
+    st, t = e.get("state"), e.get("ticket") or {}
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        return a.get("title") or a.get("kind") or "needs you"
+    if st == "working":
+        cur = e.get("current") or {}
+        return t.get("stage") or cur.get("tool") or "working"
+    if st == "background":
+        n = sum(a.get("status") in ("running", "needs_you") for a in e.get("agents") or [])
+        return f"{n} agent{'s' if n != 1 else ''}" if n else "shells"
+    if e.get("unseen"):
+        return "done"
+    return t.get("stage") or ""
 
-    `done` (the Stop hook, i.e. any turn ending) is deliberately NOT an alert. Stop
-    fires between every pipeline stage, where Claude carries straight on; treating it
-    as "needs you" is what used to light this dashboard red at random.
 
-    An attached session never shows a Claude alert: you are already looking at it, and
-    idle_prompt fires 60s after any turn ends. Pipeline states are exempt — they
-    describe the ticket, not your attention.
+def _board_status(e):
+    st = e.get("state")
+    if st == "needs_you":
+        return "alert"
+    if st == "working":
+        cur = e.get("current") or {}
+        typ, started = cur.get("typical_ms"), cur.get("started")
+        if typ and started and time.time() * 1000 - started > typ:
+            return "slow"
+        return "busy"
+    if st == "background":
+        return "background"
+    return "done" if e.get("unseen") else "idle"
 
-    Batched deliberately: this runs on every poll (~1/s) for up to 5 session keys and
-    10 work-page keys, so a per-session show-options would be ~40 subprocess spawns a
-    second for a screenful of information that fits in one.
-    """
-    fmt = ("#{session_name}|#{@claude_state}|#{@claude_detail}|#{@claude_pane}"
-           "|#{@pipeline_state}|#{@pipeline_label}|#{session_attached}")
-    rows = tmux("list-sessions", "-F", fmt).stdout.splitlines()
-    live_panes = set()
-    for ln in tmux("list-panes", "-a", "-F", "#{session_name}|#{pane_id}").stdout.splitlines():
-        live_panes.add(ln.strip())
 
+def session_states(entries=None):
+    """{name: (status, label, board_key)} for every tmux session that runs a Claude.
+
+    status is 'alert' | 'busy' | 'slow' | 'background' | 'done' | 'idle'. One
+    `board list --json` per poll; the board sorts its entries most-urgent first, so
+    the first entry for a session is the one its key shows. Sessions without a Claude
+    are simply absent (callers default them to idle)."""
     out = {}
-    for ln in rows:
-        parts = (ln.rstrip("\n").split("|") + [""] * 7)[:7]
-        name, cstate, cdetail, cpane, pstate, plabel, attached = parts
-        if not name:
-            continue
-        if pstate == "blocked":
-            out[name] = ("alert", plabel or "needs you")
-        elif pstate == "running":
-            out[name] = ("busy", plabel or "working")
-        elif pstate == "done":
-            out[name] = ("done", plabel or "done")
-        elif not cstate:
-            out[name] = ("idle", "")
-        elif attached not in ("", "0") and cstate in ("blocked", "waiting", "done"):
-            out[name] = ("idle", "")
-        elif cpane and f"{name}|{cpane}" not in live_panes:
-            out[name] = ("idle", "")
-        elif cstate in ("blocked", "waiting"):
-            out[name] = ("alert", cdetail or cstate)
-        elif cstate == "working":
-            out[name] = ("busy", cdetail or "")
-        else:
-            out[name] = ("idle", "")
+    for e in board_entries() if entries is None else entries:
+        name = (e.get("tmux") or {}).get("session")
+        if name and name not in out:
+            out[name] = (_board_status(e), _board_label(e), e.get("key"))
     return out
+
+
+def newest_design(entries):
+    """(board key, design) of the newest design canvas across sessions, or (None, None)."""
+    best = (None, None)
+    for e in entries:
+        for d in e.get("designs") or []:
+            if d.get("url") and (best[1] is None or (d.get("at") or 0) > (best[1].get("at") or 0)):
+                best = (e.get("key"), d)
+    return best
 
 
 def active_client():
@@ -492,7 +525,7 @@ def render_session(deck, name, status, attached, label=""):
         if logo:
             img.paste(logo, (int((w - logo.width) / 2), int((h - band - logo.height) / 2)), logo)
         else:
-            fg = (30, 30, 30) if status == "busy" else COLORS["text"]
+            fg = (30, 30, 30) if _light(COLORS[status]) else COLORS["text"]
             _draw_wrapped(d, name, body, fg, 15)
         if label:
             d.rectangle([0, h - band, w, h], fill=_shade(COLORS[status]))
@@ -506,6 +539,12 @@ def render_session(deck, name, status, attached, label=""):
     if attached:
         d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["attach"], width=4)
     return PILHelper.to_native_key_format(deck, img)
+
+
+def _light(rgb):
+    """True for a key background light enough to need dark text (frost, yellow, green)."""
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b > 150
 
 
 def _shade(rgb, factor=0.45):
@@ -522,6 +561,23 @@ def render_action(deck, glyph, label, active):
     gy = font(30)
     d.text((w / 2, h * 0.40), glyph, font=gy, fill=accent, anchor="mm")
     d.text((w / 2, h * 0.82), label, font=font(12), fill=COLORS["textdim"], anchor="mm")
+    return PILHelper.to_native_key_format(deck, img)
+
+
+DESIGN_GLYPH = "\uf1fc"  # paint brush
+
+
+def render_design(deck, has_design):
+    """The DESIGN key: the brush in the theme accent (with an accent border) when a
+    design canvas exists, dim otherwise."""
+    w, h = key_size(deck)
+    img = Image.new("RGB", (w, h), COLORS["action"])
+    d = ImageDraw.Draw(img)
+    col = COLORS["design"] if has_design else COLORS["textdim"]
+    d.text((w / 2, h * 0.40), DESIGN_GLYPH, font=font(30), fill=col, anchor="mm")
+    d.text((w / 2, h * 0.82), "DESIGN", font=font(12), fill=COLORS["textdim"], anchor="mm")
+    if has_design:
+        d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["design"], width=3)
     return PILHelper.to_native_key_format(deck, img)
 
 
@@ -547,7 +603,7 @@ def render_work(deck, label, logo_file, glyph, accent, live, status, attached):
     if attached:
         border = COLORS["attach"]
     elif live:
-        border = {"alert": COLORS["alert"], "busy": COLORS["busy"]}.get(status, COLORS["live"])
+        border = COLORS[status] if status in ("alert", "busy", "slow", "background") else COLORS["live"]
     else:
         border = None
     if border:
@@ -640,6 +696,8 @@ class Dashboard:
         self.lock = threading.Lock()
         self.cache = {}           # key -> signature of last render
         self.session_at = {}      # key -> session name (for press handling)
+        self.board_at = {}        # key -> board key of the session's most urgent Claude
+        self.design_key = None    # board key owning the newest design (DESIGN key)
         self.theme_at = {}        # key -> theme name (theme-picker page)
         self.work_at = {}         # key -> project session name (work page)
         self.vps_at = {}          # key -> ssh alias (vps page)
@@ -670,7 +728,8 @@ class Dashboard:
 
     def _refresh_main(self):
         sessions = list_sessions()
-        states = session_states()
+        entries = board_entries()
+        states = session_states(entries)
         attached = attached_session()
 
         # Alphabetical, so a key keeps its position and stays muscle memory. But the
@@ -678,7 +737,7 @@ class Dashboard:
         # when there are more sessions than slots the alerting ones are guaranteed a
         # place rather than falling off the end of the alphabet.
         if len(sessions) > len(SESSION_SLOTS):
-            alerting = [n for n in sessions if states.get(n, ("idle", ""))[0] == "alert"]
+            alerting = [n for n in sessions if states.get(n, ("idle", "", None))[0] == "alert"]
             rest = [n for n in sessions if n not in alerting]
             keep = set(alerting[:len(SESSION_SLOTS)])
             for n in rest:
@@ -688,10 +747,12 @@ class Dashboard:
             sessions = [n for n in sessions if n in keep]
 
         self.session_at = {}
+        self.board_at = {}
         for i, key in enumerate(SESSION_SLOTS):
             name = sessions[i] if i < len(sessions) else None
             self.session_at[key] = name
-            status, label = states.get(name, ("idle", "")) if name else ("empty", "")
+            status, label, bkey = states.get(name, ("idle", "", None)) if name else ("empty", "", None)
+            self.board_at[key] = bkey
             is_attached = bool(name) and name == attached
             self.set_key(key, ("s", name, status, label, is_attached),
                          lambda n=name, s=status, l=label, a=is_attached:
@@ -699,7 +760,10 @@ class Dashboard:
         self._action(MEDIA_KEY, MEDIA_GLYPH, "MEDIA", False)
         self._action(WORK_KEY, WORK_GLYPH, "WORK", False)
         self._action(VPS_KEY, VPS_GLYPH, "VPS", False)
-        used = set(SESSION_SLOTS) | {MEDIA_KEY, WORK_KEY, VPS_KEY} | set(ACTIONS)
+        self.design_key, design = newest_design(entries)
+        has = design is not None
+        self.set_key(DESIGN_KEY, ("d", has), lambda h=has: render_design(self.deck, h))
+        used = set(SESSION_SLOTS) | {MEDIA_KEY, WORK_KEY, VPS_KEY, DESIGN_KEY} | set(ACTIONS)
         for key in range(self.deck.key_count()):
             if key not in used:
                 self._blank(key)
@@ -757,7 +821,7 @@ class Dashboard:
             name, label, logo_file, glyph = proj
             self.work_at[key] = name
             is_live = name in live
-            status = states.get(name, ("idle", ""))[0] if is_live else "idle"
+            status = states.get(name, ("idle", "", None))[0] if is_live else "idle"
             is_attached = name == attached
             self.set_key(key, ("w", label, logo_file, glyph, accent, is_live, status, is_attached),
                          lambda l=label, lf=logo_file, g=glyph, a=accent, lv=is_live, s=status, at=is_attached:
@@ -810,11 +874,17 @@ class Dashboard:
             self.view = "vps"
         elif key == THEME_KEY:
             self.view = "themes"
+        elif key == DESIGN_KEY:
+            if self.design_key:
+                sh("board", "design", self.design_key)
         elif key in ACTIONS:
             ACTIONS[key][3]()
         else:
             name = self.session_at.get(key)
-            if name:
+            bkey = self.board_at.get(key)
+            if bkey:
+                sh("board", "jump", bkey)
+            elif name:
                 switch_to(name)
 
     def _press_media(self, key):

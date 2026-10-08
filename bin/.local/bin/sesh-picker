@@ -40,7 +40,7 @@ selected="$(
 )" || exit 0
 
 [ -z "$selected" ] && exit 0
-# Strip the status column sesh-list-bells appended ("⏸ plan-brief", "▶ review") before
+# Strip the status column sesh-list-bells appended ("● needs you · Results", "▶ pnpm test 3m") before
 # handing the line to `sesh connect`. It is free text now rather than a lone glyph, so
 # this goes through the shared cleaner rather than a local sed — three scripts strip
 # these rows and they must not drift.

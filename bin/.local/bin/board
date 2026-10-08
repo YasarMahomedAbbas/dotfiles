@@ -1,0 +1,1085 @@
+#!/usr/bin/env python3
+"""
+board — the agent board's CLI: the one reader every display uses.
+
+Contract: docs/agent-board.md. The agent-board Claude mod writes one state file per
+Claude process to $BOARD_DIR/<key>.json (default ~/.cache/claude-board); this reads
+them, drops stale ones, enriches each and acts on them.
+
+  board list [--json]            sessions, needs_you > working > background > unseen > idle
+  board summary [--json]         counts + the live stack per project
+  board pill                     tmux status-right pill (nothing when all quiet)
+  board roster                   fzf roster (tmux prefix+i)
+  board jump <key>               focus Ghostty, switch the tmux client to that pane, mark seen
+  board next                     jump to the oldest needs_you session
+  board answer <key> <n>         send option n to that pane (only while it is needs_you)
+  board stack <key> [--yes]      wt-dev use <worktree> --db auto (dry run without --yes)
+  board design <key> [--copy]    open (or wl-copy) the newest design url
+  board seen <key|%pane>         mark finished work as seen (tmux pane-focus-in hook)
+  board keys [--json]            the board's key table, for the cheatsheet
+
+`<key>` is the state file's name without `.json`: the tmux pane id without `%`
+(`%42` -> `42`) or `nopane-<session_id>`. Anywhere a key is taken, `%42` works too.
+
+`board list --json` is consumed by quickshell and streamdeck-dashboard: an array of the
+state files exactly as the mod wrote them, each with these fields added:
+
+  key      str    the state file's name (see above)
+  stale    bool   heartbeat older than 30 s AND pid gone (shown grey; the file is
+                  deleted once its heartbeat is 10 min old)
+  unseen   bool   state is idle and `finished_at` is newer than $BOARD_DIR/seen/<key>
+                  (touched by `board seen`, and automatically for a pane a tmux client
+                  is currently looking at)
+  stack    str    the wt-dev dev stack for this session's worktree: "live" | "starting"
+                  | "off" (another tree of the project owns it, or nothing runs), or
+                  null when the worktree is not a wt-dev project
+  ticket   obj    null when nothing is known, else
+                  {issue, title, problem, stage, stage_index, stage_total, tasks_done,
+                   tasks_total, checkpoint, slug} — any field may be null. From
+                  `ticket-context <cwd>` (cached 30 s per cwd); `issue` falls back to a
+                  tmux session named `issue-<n>`; `stage` falls back to the session's
+                  @pipeline_label (set by pipeline-status) when ticket-context has none.
+
+`board summary --json`:
+  {"needs_you": n, "working": n, "background": n, "unseen": n,
+   "designs": n,                                  # design entries across live sessions
+   "stacks": {"<project>": {"state": "live|starting|failed|stopped",
+                            "tree": "<worktree name>|null", "branch": "...|null"}}}
+
+Caches live in $BOARD_DIR/cache/: ticket-context per cwd (30 s), `wt-dev status
+--short` (5 s), the roster's mode. Python 3 stdlib only.
+"""
+
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+BOARD_DIR = Path(os.environ.get("BOARD_DIR") or Path.home() / ".cache/claude-board")
+CACHE = BOARD_DIR / "cache"
+SEEN = BOARD_DIR / "seen"
+STALE_MS = 30_000
+REAP_MS = 10 * 60_000
+TICKET_TTL = 30
+STACK_TTL = 5
+STATES = ("needs_you", "working", "background", "idle")
+GHOSTTY_CLASS = "com.mitchellh.ghostty"
+TS_REPO = "WhiteWolfStudio/travel-smart"
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+# ── small helpers ───────────────────────────────────────────────────────────────
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def run(args, timeout=3, cwd=None):
+    """stdout of a command, or None when it fails / is missing / times out."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def detach(args, cwd=None):
+    """Fire and forget (xdg-open, gh --web, ghostty): never block on a GUI child. In
+    its own transient systemd scope when possible, so a window started from a caller
+    running as a service (streamdeck-dashboard) is not killed when that service is."""
+    if shutil.which("systemd-run"):
+        args = ["systemd-run", "--user", "--scope", "--quiet", "--collect", *args]
+    try:
+        subprocess.Popen(args, cwd=cwd, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
+def pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def norm_key(k):
+    return k[1:] if k.startswith("%") else k
+
+
+def elapsed(ms):
+    s = max(0, int(ms // 1000))
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m"
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+def cached(name, ttl, produce):
+    """JSON cache under $BOARD_DIR/cache: serve if younger than ttl, else produce."""
+    f = CACHE / name
+    try:
+        if time.time() - f.stat().st_mtime < ttl:
+            return json.loads(f.read_text())
+    except (OSError, ValueError):
+        pass
+    val = produce()
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(val))
+        tmp.replace(f)
+    except OSError:
+        pass
+    return val
+
+
+def die(msg, code=1):
+    print(f"board: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ── colours (~/.config/theme/sesh-colors.sh, dark-nord fallbacks) ────────────────
+def theme():
+    vals = {}
+    for name in ("sesh-colors.sh", "ticket-colors.sh"):
+        try:
+            text = (Path.home() / ".config/theme" / name).read_text()
+        except OSError:
+            continue
+        for m in re.finditer(r"^(\w+)=['\"]?([^'\"\n]*)", text, re.M):
+            vals[m.group(1)] = m.group(2).strip().lstrip("#")
+    fzf = dict(p.split(":", 1) for p in vals.get("SESH_FZF_COLORS", "").split(",") if ":" in p)
+    fz = lambda k, d: fzf.get(k, d).lstrip("#")  # noqa: E731
+    return {
+        "red": vals.get("SESH_BELL_COLOR", "bf616a"),
+        "yellow": vals.get("SESH_BUSY_COLOR", "ebcb8b"),
+        "green": vals.get("SESH_OK_COLOR", "a3be8c"),
+        "dim": vals.get("SESH_DIM_COLOR", "6c7a96"),
+        "accent": vals.get("SESH_ACCENT_COLOR", "88c0d0"),
+        "text": vals.get("SESH_TEXT_COLOR", "d8dee9"),
+        # fg0 / blue / pill bg were added to sesh-colors.sh with the board; before the
+        # next theme-switch they come from the fzf string (fg+ = fg0, prompt = blue).
+        "fg0": vals.get("SESH_FG0_COLOR") or fz("fg+", "eceff4"),
+        "blue": vals.get("SESH_BLUE_COLOR") or fz("prompt", "81a1c1"),
+        "bg0": vals.get("SESH_BG_COLOR") or fz("bg", "0a0b0e"),
+        "pill": vals.get("SESH_PILL_BG") or vals.get("TICKET_PILL_BG") or "29303c",
+        "fzf": vals.get("SESH_FZF_COLORS", ""),
+    }
+
+
+class Paint:
+    def __init__(self, on=True):
+        self.on = on
+        self.t = theme()
+
+    def __call__(self, role, s, bold=False):
+        if not self.on or not s:
+            return s
+        h = self.t.get(role, role)
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[{'1;' if bold else ''}38;2;{r};{g};{b}m{s}\033[0m"
+
+
+# ── tmux facts (one call each) ───────────────────────────────────────────────────
+def tmux_sessions():
+    """{session: {"pstate", "plabel"}} — pipeline-status's options."""
+    out = run(["tmux", "list-sessions", "-F", "#{session_name}\t#{@pipeline_state}\t#{@pipeline_label}"], timeout=2)
+    res = {}
+    for ln in (out or "").splitlines():
+        p = (ln.split("\t") + ["", ""])[:3]
+        if p[0]:
+            res[p[0]] = {"pstate": p[1], "plabel": p[2]}
+    return res
+
+
+def focused_panes():
+    """Panes some tmux client is looking at right now (its current window's active pane)."""
+    out = run(["tmux", "list-clients", "-F", "#{pane_id}"], timeout=2)
+    return {ln.strip() for ln in (out or "").splitlines() if ln.strip()}
+
+
+# ── wt-dev ───────────────────────────────────────────────────────────────────────
+WT_STATE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "wt-dev"
+WT_LINE = re.compile(r"^\s+(\S+)\s+(?:●|○|◐|✗)\s+(live|stopped|starting|failed)(?:\s+(\S+)\s+(\S+))?")
+
+
+def wt_status():
+    """{project: {state, tree, branch}} parsed from `wt-dev status --short` (cached 5 s).
+
+    A line reads `  travel-smart   ● live  <tree>  <branch>`; only `live` names its
+    tree, so for starting/failed the tree comes from wt-dev's own state file."""
+    def produce():
+        out = run(["wt-dev", "status", "--short"], timeout=5) or ""
+        res = {}
+        for ln in ANSI_RE.sub("", out).splitlines():
+            m = WT_LINE.match(ln)
+            if not m:
+                continue
+            proj, state, tree, branch = m.groups()
+            if state in ("starting", "failed") and not tree:
+                try:
+                    for kv in (WT_STATE / f"{proj}.state").read_text().splitlines():
+                        k, _, v = kv.partition("=")
+                        if k == "tree" and v:
+                            tree = os.path.basename(v)
+                        elif k == "branch" and v:
+                            branch = v
+                except OSError:
+                    pass
+            res[proj] = {"state": state, "tree": tree, "branch": branch}
+        return res
+    return cached("wt-status.json", STACK_TTL, produce)
+
+
+def wt_project(main):
+    """The wt-dev project name declared by <main>/.wtdev.toml, or None."""
+    try:
+        text = (Path(main) / ".wtdev.toml").read_text()
+    except OSError:
+        return None
+    m = re.search(r'^\s*name\s*=\s*"([^"]+)"', text, re.M)
+    return m.group(1) if m else os.path.basename(main)
+
+
+def stack_urls(proj, main):
+    """The project's URLs: from `wt-dev status` (its block), else .wtdev.toml `urls`."""
+    out = ANSI_RE.sub("", run(["wt-dev", "status"], timeout=8) or "")
+    urls, inside = [], False
+    for ln in out.splitlines():
+        h = re.match(r"^  (\S+)\s{2,}", ln)
+        if h:
+            inside = h.group(1) == proj
+            continue
+        if inside:
+            urls += re.findall(r"https?://\S+", ln)
+    if not urls and main:
+        try:
+            text = (Path(main) / ".wtdev.toml").read_text()
+            m = re.search(r"^\s*urls\s*=\s*\[(.*)\]", text, re.M)
+            if m:
+                urls = [u.split("=", 1)[-1] for u in re.findall(r'"([^"]+)"', m.group(1))]
+        except OSError:
+            pass
+    front = [u for u in urls if "5173" in u or "frontend" in u]
+    return front + [u for u in urls if u not in front]
+
+
+# ── per-worktree context (ticket-context + git, cached 30 s per cwd) ────────────
+def worktree_ctx(cwd):
+    def produce():
+        ctx = {"tc": {}, "toplevel": None, "main": None, "project": None, "remote": None}
+        if not cwd or not os.path.isdir(cwd):
+            return ctx
+        out = run(["ticket-context", cwd], timeout=4) or ""
+        for ln in out.splitlines():
+            try:
+                toks = shlex.split(ln)
+            except ValueError:
+                continue
+            if toks and "=" in toks[0]:
+                k, _, v = toks[0].partition("=")
+                ctx["tc"][k] = v
+        g = run(["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"])
+        if g:
+            parts = g.splitlines()
+            if len(parts) >= 2:
+                ctx["toplevel"] = parts[0]
+                common = parts[1]
+                ctx["main"] = os.path.dirname(common) if common.endswith("/.git") else parts[0]
+                ctx["project"] = wt_project(ctx["main"])
+        ctx["remote"] = (run(["git", "-C", cwd, "remote", "get-url", "origin"]) or "").strip() or None
+        return ctx
+    return cached("ctx-" + hashlib.sha1((cwd or "").encode()).hexdigest()[:16] + ".json", TICKET_TTL, produce)
+
+
+def _int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_ticket(e, ctx, sessions):
+    tc = ctx["tc"]
+    sess = (e.get("tmux") or {}).get("session") or ""
+    issue = _int(tc.get("issue"))
+    if issue is None:
+        m = re.fullmatch(r"issue-(\d+)", sess)
+        issue = int(m.group(1)) if m else None
+    on_ticket = bool(tc.get("slug")) or issue is not None
+    t = {
+        "issue": issue,
+        "title": tc.get("title") or None,
+        "problem": tc.get("problem") or None,
+        # ticket-context reports stage 1 for ANY git dir with no ticket folder, so its
+        # stage only means something on a ticket.
+        "stage": tc.get("stage") if on_ticket else None,
+        "stage_index": _int(tc.get("stage_index")) if on_ticket else None,
+        "stage_total": _int(tc.get("stage_total")) if on_ticket else None,
+        "tasks_done": _int(tc.get("tasks_done")),
+        "tasks_total": _int(tc.get("tasks_total")),
+        "checkpoint": tc.get("checkpoint") or None,
+        "slug": tc.get("slug") or None,
+    }
+    if not t["stage"]:
+        label = sessions.get(sess, {}).get("plabel")
+        if label:
+            t["stage"] = label
+    return t if any(v is not None for v in t.values()) else None
+
+
+def stack_state(ctx, wt):
+    proj = ctx.get("project")
+    if not proj or proj not in wt:
+        return None
+    s = wt[proj]
+    mine = s.get("tree") and ctx.get("toplevel") and s["tree"] == os.path.basename(ctx["toplevel"])
+    if s["state"] == "live" and mine:
+        return "live"
+    if s["state"] == "starting" and mine:
+        return "starting"
+    return "off"
+
+
+# ── loading ──────────────────────────────────────────────────────────────────────
+def load(enrich=True):
+    """Every live state file, enriched and sorted. Each entry carries a private
+    `_ctx` (worktree context) that is stripped before JSON output."""
+    now = now_ms()
+    entries = []
+    for f in sorted(BOARD_DIR.glob("*.json")):
+        try:
+            e = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(e, dict):
+            continue
+        hb = e.get("heartbeat") or 0
+        stale = now - hb > STALE_MS and not pid_alive(e.get("pid"))
+        if stale and now - hb > REAP_MS:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+            continue
+        if e.get("state") not in STATES:
+            e["state"] = "idle"
+        e["key"] = f.stem
+        e["stale"] = stale
+        entries.append(e)
+
+    sessions = tmux_sessions() if entries else {}
+    focused = focused_panes() if entries else set()
+    wt = wt_status() if (entries and enrich) else {}
+    for e in entries:
+        # Unseen: finished after the last time anyone looked. A pane a client is
+        # looking at right now counts as looked at.
+        fin = e.get("finished_at") or 0
+        seen_f = SEEN / e["key"]
+        pane = (e.get("tmux") or {}).get("pane")
+        try:
+            seen_ms = int(seen_f.stat().st_mtime * 1000)
+        except OSError:
+            seen_ms = 0
+        unseen = e["state"] == "idle" and not e["stale"] and fin > seen_ms
+        if unseen and pane and pane in focused:
+            mark_seen(e["key"])
+            unseen = False
+        e["unseen"] = unseen
+        if enrich:
+            ctx = worktree_ctx(e.get("cwd"))
+            e["_ctx"] = ctx
+            e["ticket"] = build_ticket(e, ctx, sessions)
+            e["stack"] = stack_state(ctx, wt)
+        else:
+            e["_ctx"] = {"tc": {}}
+            e["ticket"] = None
+            e["stack"] = None
+    entries.sort(key=sort_key)
+    return entries
+
+
+def rank(e):
+    if e.get("stale"):
+        return 5
+    if e["state"] == "idle":
+        return 3 if e.get("unseen") else 4
+    return STATES.index(e["state"])
+
+
+def sort_key(e):
+    att = (e.get("attention") or {}).get("since") or e.get("since") or 0
+    return (rank(e), att if e["state"] == "needs_you" else 0,
+            (e.get("tmux") or {}).get("session") or "", e["key"])
+
+
+def public(e):
+    return {k: v for k, v in e.items() if not k.startswith("_")}
+
+
+def find(key):
+    key = norm_key(key)
+    for e in load():
+        if e["key"] == key:
+            return e
+    die(f"no session with key {key}")
+
+
+def mark_seen(key):
+    try:
+        SEEN.mkdir(parents=True, exist_ok=True)
+        p = SEEN / key
+        p.touch()
+        os.utime(p, None)
+    except OSError:
+        pass
+
+
+# ── text for a row / a status ────────────────────────────────────────────────────
+def running(e, kind):
+    return [x for x in (e.get(kind) or []) if x.get("status") in ("running", "needs_you")]
+
+
+def is_slow(e, now=None):
+    cur = e.get("current") or {}
+    typ = cur.get("typical_ms")
+    return bool(typ and cur.get("started") and (now or now_ms()) - cur["started"] > typ)
+
+
+def doing(e, now=None):
+    """What the session is doing, in a few words."""
+    now = now or now_ms()
+    st = e["state"]
+    if e.get("stale"):
+        return "stale"
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        return "needs you · " + (a.get("title") or a.get("kind") or "?")
+    if st == "working":
+        cur = e.get("current") or {}
+        what = cur.get("detail") or cur.get("tool") or "working"
+        el = elapsed(now - (cur.get("started") or e.get("since") or now))
+        return f"{what} {el}" + (" slow" if is_slow(e, now) else "")
+    if st == "background":
+        n = len(running(e, "agents"))
+        if n:
+            return f"background · {n} agent{'s' if n != 1 else ''}"
+        n = len(running(e, "shells"))
+        return f"background · {n} shell{'s' if n != 1 else ''}"
+    return "unseen" if e.get("unseen") else "idle"
+
+
+GLYPH = {"needs_you": "●", "working": "▶", "background": "◐", "unseen": "✓", "idle": "·", "stale": "○"}
+
+
+def status_role(e):
+    if e.get("stale"):
+        return "dim", "stale"
+    st = e["state"]
+    if st == "needs_you":
+        return "red", st
+    if st == "working":
+        return ("yellow" if is_slow(e) else "fg0"), st
+    if st == "background":
+        return "blue", st
+    if e.get("unseen"):
+        return "green", "unseen"
+    return "dim", "idle"
+
+
+def label_for(e):
+    t = e.get("ticket") or {}
+    if t.get("issue"):
+        return f"#{t['issue']}"
+    return (e.get("tmux") or {}).get("session") or os.path.basename(e.get("cwd") or "") or e["key"]
+
+
+def brief_for(e):
+    t = e.get("ticket") or {}
+    return t.get("problem") or t.get("title") or e.get("branch") or os.path.basename(e.get("cwd") or "")
+
+
+def fit(s, n):
+    s = (s or "").replace("\t", " ").replace("\n", " ")
+    return s if len(s) <= n else s[: max(0, n - 1)] + "…"
+
+
+def row(e, paint, widths=(10, 38, 34)):
+    role, st = status_role(e)
+    chip = {"live": paint("green", "● stack"), "starting": paint("yellow", "◐ stack")}.get(e.get("stack"), "")
+    return "  ".join([
+        paint(role, GLYPH[st]),
+        paint("accent", f"{fit(label_for(e), widths[0]):<{widths[0]}}"),
+        paint("text", f"{fit(brief_for(e), widths[1]):<{widths[1]}}"),
+        paint(role, f"{fit(doing(e), widths[2]):<{widths[2]}}"),
+        chip,
+    ]).rstrip()
+
+
+# ── commands ─────────────────────────────────────────────────────────────────────
+def cmd_list(args):
+    entries = load()
+    if "--json" in args:
+        print(json.dumps([public(e) for e in entries], ensure_ascii=False))
+        return
+    paint = Paint(sys.stdout.isatty())
+    for e in entries:
+        print(row(e, paint))
+
+
+def summarize(entries):
+    live = [e for e in entries if not e.get("stale")]
+    wt = wt_status()
+    return {
+        "needs_you": sum(e["state"] == "needs_you" for e in live),
+        "working": sum(e["state"] == "working" for e in live),
+        "background": sum(e["state"] == "background" for e in live),
+        "unseen": sum(bool(e.get("unseen")) for e in live),
+        "designs": sum(len(e.get("designs") or []) for e in live),
+        "stacks": {p: {"state": s["state"], "tree": s.get("tree"), "branch": s.get("branch")} for p, s in wt.items()},
+    }
+
+
+def cmd_summary(args):
+    s = summarize(load())
+    if "--json" in args:
+        print(json.dumps(s, ensure_ascii=False))
+        return
+    print(f"{s['needs_you']} needs you · {s['working']} working · {s['background']} background · "
+          f"{s['unseen']} unseen · {s['designs']} designs")
+    for p, st in s["stacks"].items():
+        tail = f"  {st['tree']}  {st['branch'] or ''}" if st.get("tree") and st["state"] != "stopped" else ""
+        print(f"  {p:<16} {st['state']}{tail}")
+
+
+def cmd_pill(_args):
+    """`● N needs you` on red, then `▶ N ◐ N` in a grey pill; nothing when all quiet.
+    Printed whole (caps included) for the same reason as `wt-dev tmux`: an empty pill
+    still renders as a blob and tmux cannot branch on a #()'s output."""
+    entries = [e for e in load(enrich=False) if not e.get("stale")]
+    need = sum(e["state"] == "needs_you" for e in entries)
+    work = [e for e in entries if e["state"] == "working"]
+    bg = sum(e["state"] == "background" for e in entries)
+    t = theme()
+    o, c = "", ""
+    out = ""
+    if need:
+        out += (f"#[fg=#{t['red']},bg=default]{o}#[bg=#{t['red']},fg=#{t['bg0']},bold] ● {need} needs you "
+                f"#[fg=#{t['red']},bg=default,nobold]{c}#[bg=default] ")
+    if work or bg:
+        inner = ""
+        if work:
+            fg = t["yellow"] if any(is_slow(e) for e in work) else t["fg0"]
+            inner += f"#[fg=#{fg}] ▶ {len(work)}"
+        if bg:
+            inner += f"#[fg=#{t['blue']}] ◐ {bg}"
+        out += f"#[fg=#{t['pill']},bg=default]{o}#[bg=#{t['pill']}]{inner} #[fg=#{t['pill']},bg=default]{c}#[bg=default] "
+    sys.stdout.write(out)
+
+
+def tmux_client():
+    """The client to drive from outside tmux: the most recently active one."""
+    out = run(["tmux", "list-clients", "-F", "#{client_activity} #{client_name}"], timeout=2) or ""
+    best, best_t = None, -1
+    for ln in out.splitlines():
+        act, _, name = ln.partition(" ")
+        t = int(act) if act.isdigit() else 0
+        if name and t >= best_t:
+            best, best_t = name, t
+    return best
+
+
+def focus_terminal():
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        run(["hyprctl", "dispatch", "focuswindow", f"class:{GHOSTTY_CLASS}"])
+
+
+def jump(e):
+    t = e.get("tmux") or {}
+    pane = t.get("pane")
+    if not pane:
+        die(f"{e['key']} is not in tmux (cwd {e.get('cwd')})")
+    sess = (run(["tmux", "display-message", "-p", "-t", pane, "#{session_name}"]) or "").strip() or t.get("session")
+    if not sess:
+        die(f"pane {pane} is gone")
+    if os.environ.get("TMUX"):
+        client = []
+    else:
+        c = tmux_client()
+        if not c:
+            focus_terminal()
+            detach(["ghostty", "-e", "tmux", "attach", "-t", f"={sess}"])
+            mark_seen(e["key"])
+            return
+        client = ["-c", c]
+    run(["tmux", "switch-client", *client, "-t", f"={sess}"])
+    run(["tmux", "select-window", "-t", pane])
+    run(["tmux", "select-pane", "-t", pane])
+    focus_terminal()
+    mark_seen(e["key"])
+
+
+def cmd_jump(args):
+    if not args:
+        die("usage: board jump <key>")
+    jump(find(args[0]))
+
+
+def cmd_next(_args):
+    need = [e for e in load(enrich=False) if e["state"] == "needs_you" and not e.get("stale")]
+    if not need:
+        print("nothing needs you")
+        return
+    need.sort(key=lambda e: (e.get("attention") or {}).get("since") or e.get("since") or 0)
+    jump(need[0])
+
+
+def cmd_answer(args):
+    if len(args) < 2:
+        die("usage: board answer <key> <n>")
+    e, n = find(args[0]), args[1]
+    if e["state"] != "needs_you":
+        die(f"{e['key']} is not waiting on you")
+    opts = [o.get("key") for o in (e.get("attention") or {}).get("options") or []]
+    if opts and n not in opts:
+        die(f"{e['key']} has no option {n} (options: {' '.join(opts)})")
+    pane = (e.get("tmux") or {}).get("pane")
+    if not pane:
+        die(f"{e['key']} is not in tmux")
+    if run(["tmux", "send-keys", "-t", pane, n]) is None:
+        die(f"send-keys to {pane} failed")
+
+
+def stack_plan(e):
+    """(worktree, project, lines describing what `board stack --yes` would do, already_live)."""
+    ctx = e.get("_ctx") or {}
+    tree, proj = ctx.get("toplevel"), ctx.get("project")
+    if not tree or not proj:
+        return None, None, [f"{label_for(e)}: not a wt-dev project ({e.get('cwd')})"], False
+    s = wt_status().get(proj, {"state": "stopped"})
+    name = os.path.basename(tree)
+    lines = [f"worktree  {name}  ({tree})", f"project   {proj}"]
+    if e.get("stack") in ("live", "starting"):
+        return tree, proj, lines + [f"already {e['stack']} — nothing to do"], True
+    if s["state"] in ("live", "starting", "failed") and s.get("tree"):
+        lines.append(f"stops     {proj} {s['state']} on {s['tree']}" + (f" ({s['branch']})" if s.get("branch") else ""))
+    else:
+        lines.append(f"stops     nothing ({proj} is {s['state']})")
+    lines.append(f"runs      wt-dev use {tree} --db auto")
+    return tree, proj, lines, False
+
+
+def cmd_stack(args):
+    if not args:
+        die("usage: board stack <key> [--yes]")
+    e = find(args[0])
+    tree, _proj, lines, live = stack_plan(e)
+    if "--yes" not in args or not tree or live:
+        print("\n".join(lines))
+        if tree and not live:
+            print("(dry run — add --yes to switch)")
+        sys.exit(0 if tree else 1)
+    r = subprocess.run(["wt-dev", "use", tree, "--db", "auto"])
+    try:
+        (CACHE / "wt-status.json").unlink()
+    except OSError:
+        pass
+    sys.exit(r.returncode)
+
+
+def newest_design(e):
+    ds = [d for d in (e.get("designs") or []) if d.get("url")]
+    return max(ds, key=lambda d: d.get("at") or 0) if ds else None
+
+
+def cmd_design(args):
+    if not args:
+        die("usage: board design <key> [--copy]")
+    d = newest_design(find(args[0]))
+    if not d:
+        die("no design published from this session")
+    if "--copy" in args:
+        try:
+            subprocess.run(["wl-copy", d["url"]], timeout=3, check=False)
+        except (OSError, subprocess.SubprocessError):
+            die("wl-copy failed")
+    else:
+        detach(["xdg-open", d["url"]])
+
+
+def cmd_seen(args):
+    if not args:
+        die("usage: board seen <key|%pane>")
+    key = norm_key(args[0])
+    if (BOARD_DIR / f"{key}.json").exists():
+        mark_seen(key)
+
+
+KEYS = [
+    ("In the roster", "j k", "Move"),
+    ("In the roster", "⏎", "Jump to the session"),
+    ("In the roster", "1-9", "Answer the question with that option"),
+    ("In the roster", "s s", "Switch the dev stack to this worktree (press twice)"),
+    ("In the roster", "v", "Open the newest design"),
+    ("In the roster", "y", "Copy the design link"),
+    ("In the roster", "o", "Open the live stack (localhost)"),
+    ("In the roster", "t", "Open the GitHub issue"),
+    ("In the roster", "c", "Show the checklist"),
+    ("In the roster", "/", "Filter"),
+    ("In the roster", "?", "Show these keys"),
+    ("In the roster", "esc", "Close (or leave the filter)"),
+    ("Agent board", "SUPER+G", "Roster (quickshell)"),
+    ("Agent board", "SUPER+N", "Jump to the oldest session that needs you"),
+    ("Agent board", "SUPER+Shift+G", "Checklist wall (quickshell)"),
+    ("Agent board", "SUPER+/", "Keys cheatsheet"),
+    ("Agent board", "prefix+i", "Roster in a tmux popup"),
+]
+
+
+def keys_text():
+    out, group = [], None
+    for g, k, d in KEYS:
+        if g != group:
+            out.append(("" if group is None else "\n") + g)
+            group = g
+        out.append(f"  {k:<14} {d}")
+    return "\n".join(out)
+
+
+def cmd_keys(args):
+    if "--json" in args:
+        print(json.dumps([{"group": g, "keys": k, "desc": d} for g, k, d in KEYS], ensure_ascii=False))
+    else:
+        print(keys_text())
+
+
+# ── roster (fzf) ─────────────────────────────────────────────────────────────────
+MODE_FILE = CACHE / "roster-mode"
+
+
+def get_mode():
+    try:
+        mode, _, key = MODE_FILE.read_text().strip().partition(" ")
+        return mode, key
+    except OSError:
+        return "", ""
+
+
+def set_mode(mode, key=""):
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        MODE_FILE.write_text(f"{mode} {key}".strip())
+    except OSError:
+        pass
+
+
+def roster_rows():
+    paint = Paint(True)
+    for e in load():
+        print(f"{e['key']}\t{row(e, paint)}")
+
+
+def wrap(text, width, indent="  "):
+    import textwrap
+    return [indent + ln for ln in textwrap.wrap(text or "", max(20, width - len(indent))) or [""]]
+
+
+def preview(key):
+    paint = Paint(True)
+    width = int(os.environ.get("FZF_PREVIEW_COLUMNS") or 80)
+    key = norm_key(key)
+    e = next((x for x in load() if x["key"] == key), None)
+    if not e:
+        print("  (gone)")
+        return
+    mode, mkey = get_mode()
+    if mode and mkey != key:
+        # the cursor moved: a pending `s` confirmation (or checklist/keys view) is dropped
+        set_mode("")
+        mode = ""
+    now = now_ms()
+    role, _st = status_role(e)
+    t = e.get("ticket") or {}
+    out = []
+    head = paint("accent", label_for(e), bold=True)
+    sess = (e.get("tmux") or {}).get("session")
+    if sess and t.get("issue"):
+        head += "  " + paint("dim", sess)
+    out.append(f"  {head}   {paint(role, doing(e, now))}")
+    if brief_for(e):
+        out += [paint("text", ln) for ln in wrap(brief_for(e), width)]
+    if e.get("branch") and e["branch"] != brief_for(e):
+        out.append("  " + paint("dim", e["branch"]))
+    out.append("")
+
+    if mode == "keys":
+        out += [paint("text", "  " + ln) for ln in keys_text().splitlines()]
+        print("\n".join(out))
+        return
+    if mode in ("stack", "stacked"):
+        _tree, _proj, lines, live = stack_plan(e)
+        if mode == "stack":
+            out.append(paint("yellow", "  switch the dev stack?", bold=True))
+            out += ["  " + paint("text", ln) for ln in lines]
+            if not live and _tree:
+                out += ["", paint("yellow", "  press s again to do it · move away to cancel")]
+        else:
+            out.append(paint("green", "  stack switch started", bold=True))
+            try:
+                log = (CACHE / f"stack-{key}.log").read_text()
+                out += ["  " + paint("dim", ANSI_RE.sub("", ln)) for ln in log.splitlines()[-12:]]
+            except OSError:
+                pass
+        print("\n".join(out))
+        return
+    if mode == "checklist":
+        out += checklist_lines(e, paint, width)
+        print("\n".join(out))
+        return
+
+    # ── the question
+    if e["state"] == "needs_you":
+        a = e.get("attention") or {}
+        out.append(paint("red", f"  {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
+        out += [paint("text", ln) for ln in wrap(a.get("text") or "", width)]
+        for o in a.get("options") or []:
+            out.append(f"    {paint('red', o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+        out.append("")
+    elif e["state"] == "working" and e.get("current"):
+        cur = e["current"]
+        el = elapsed(now - (cur.get("started") or now))
+        typ = f" · typical {elapsed(cur['typical_ms'])}" if cur.get("typical_ms") else ""
+        out.append("  " + paint(role, f"▶ {cur.get('tool', '')}  {cur.get('detail') or ''}") + paint("dim", f"  {el}{typ}"))
+        out.append("")
+
+    # ── stage strip + checklist summary
+    if t.get("stage_index"):
+        strip = []
+        for i, s in enumerate(["plan", "build", "review", "docs", "verify", "PR"], 1):
+            if i < t["stage_index"]:
+                strip.append(paint("green", f"✓ {s}"))
+            elif i == t["stage_index"]:
+                strip.append(paint("yellow", f"▶ {s}"))
+            else:
+                strip.append(paint("dim", f"· {s}"))
+        out.append("  " + paint("dim", "pipeline  ") + "  ".join(strip))
+    elif t.get("stage"):
+        out.append("  " + paint("dim", "stage     ") + paint("text", t["stage"]))
+    if t.get("checkpoint"):
+        out.append("  " + paint("text", fit(t["checkpoint"], width - 4)))
+    if t.get("tasks_total"):
+        w = 20
+        filled = (t.get("tasks_done") or 0) * w // t["tasks_total"]
+        out.append("  " + paint("dim", "checklist ") + paint("green", "█" * filled + "░" * (w - filled))
+                   + paint("dim", f" {t.get('tasks_done') or 0}/{t['tasks_total']}"))
+    tasks = e.get("tasks") or []
+    if tasks:
+        done = sum(x.get("status") == "completed" for x in tasks)
+        cur = next((x for x in tasks if x.get("status") == "in_progress"), None)
+        out.append("  " + paint("dim", "tasks     ") + paint("text", f"{done}/{len(tasks)}")
+                   + (paint("dim", f"  ▶ {fit(cur.get('subject'), width - 24)}") if cur else ""))
+    if out[-1] != "":
+        out.append("")
+
+    # ── agents + shells
+    ags = e.get("agents") or []
+    if ags:
+        out.append("  " + paint("dim", "agents"))
+        for a in ags[:8]:
+            st = a.get("status")
+            r = {"running": "blue", "needs_you": "red"}.get(st, "dim")
+            g = {"running": "◐", "needs_you": "●"}.get(st, "✓")
+            end = a.get("ended") or now
+            el = elapsed(end - (a.get("started") or end))
+            out.append(f"    {paint(r, g)} {paint('text', f"{fit(a.get('type') or '', 14):<14}")}  "
+                       f"{paint('text', fit(a.get('description') or '', width - 34))}  {paint('dim', el)}")
+    sh = [s for s in e.get("shells") or [] if s.get("status") == "running"]
+    for s in sh[:4]:
+        out.append(f"    {paint('blue', '◐')} {paint('text', fit(s.get('command') or '', width - 20))}  "
+                   f"{paint('dim', elapsed(now - (s.get('started') or now)))}")
+    if ags or sh:
+        out.append("")
+
+    # ── design + stack
+    d = newest_design(e)
+    if d:
+        out.append("  " + paint("accent", "design    ") + paint("text", fit(d.get("title") or "", width - 30))
+                   + paint("dim", "  v open · y copy"))
+        out.append("  " + paint("dim", "          " + fit(d["url"], width - 14)))
+    if e.get("stack"):
+        r = {"live": "green", "starting": "yellow"}.get(e["stack"], "dim")
+        hint = "  o open" if e["stack"] in ("live", "starting") else "  s s switch here"
+        out.append("  " + paint("dim", "stack     ") + paint(r, e["stack"]) + paint("dim", hint))
+    out.append("  " + paint("dim", f"pane {(e.get('tmux') or {}).get('pane') or '-'} · {e.get('model') or ''}"))
+    print("\n".join(out))
+
+
+def checklist_lines(e, paint, width):
+    out = []
+    tc = (e.get("_ctx") or {}).get("tc") or {}
+    folder, slug = tc.get("folder"), tc.get("slug")
+    path = Path(folder) / f"TASK_CHECKLIST_{slug}.md" if folder and slug else None
+    if path and path.exists():
+        out.append(paint("accent", f"  {path.name}", bold=True))
+        for ln in path.read_text(errors="replace").splitlines():
+            if ln.startswith("## Checkpoint"):
+                out.append("  " + paint("text", fit(ln[3:], width - 4), bold=True))
+            elif re.match(r"^(###|\s*-) \[[xX]\]", ln):
+                out.append("    " + paint("green", "✓ ") + paint("dim", fit(re.sub(r"^(###|\s*-) \[[xX]\]\s*", "", ln), width - 8)))
+            elif re.match(r"^(###|\s*-) \[ \]", ln):
+                out.append("    " + paint("text", "· " + fit(re.sub(r"^(###|\s*-) \[ \]\s*", "", ln), width - 8)))
+        out.append("")
+    tasks = e.get("tasks") or []
+    if tasks:
+        out.append(paint("accent", "  Claude's tasks", bold=True))
+        for x in tasks:
+            st = x.get("status")
+            g, r = {"completed": ("✓", "green"), "in_progress": ("▶", "yellow")}.get(st, ("·", "text"))
+            out.append(f"    {paint(r, g)} {paint('text' if st != 'completed' else 'dim', fit(x.get('subject') or '', width - 8))}")
+    if not out:
+        out.append(paint("dim", "  no checklist and no tasks for this session"))
+    return out
+
+
+def open_stack_url(key):
+    e = find(key)
+    ctx = e.get("_ctx") or {}
+    if e.get("stack") not in ("live", "starting"):
+        die("this worktree's stack is not live")
+    urls = stack_urls(ctx.get("project"), ctx.get("main"))
+    if not urls:
+        die("no URL for the stack")
+    detach(["xdg-open", urls[0]])
+
+
+def open_ticket(key):
+    e = find(key)
+    n = (e.get("ticket") or {}).get("issue")
+    if not n:
+        die("no ticket number for this session")
+    cwd = e.get("cwd") if e.get("cwd") and os.path.isdir(e["cwd"]) else None
+    remote = (e.get("_ctx") or {}).get("remote") or ""
+    if TS_REPO.lower() in remote.lower():
+        detach(["gh", "issue", "view", str(n), "--web", "-R", TS_REPO], cwd=cwd)
+    else:
+        detach(["gh", "issue", "view", str(n), "--web"], cwd=cwd)
+
+
+def stack_press(key):
+    key = norm_key(key)
+    mode, mkey = get_mode()
+    if mode == "stack" and mkey == key:
+        e = find(key)
+        tree, _p, _l, live = stack_plan(e)
+        if tree and not live:
+            CACHE.mkdir(parents=True, exist_ok=True)
+            with open(CACHE / f"stack-{key}.log", "w") as log:
+                subprocess.run(["wt-dev", "use", tree, "--db", "auto", "--no-wait"],
+                               stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            try:
+                (CACHE / "wt-status.json").unlink()
+            except OSError:
+                pass
+        set_mode("stacked", key)
+    else:
+        set_mode("stack", key)
+
+
+def toggle_mode(mode, key):
+    key = norm_key(key)
+    cur, ckey = get_mode()
+    set_mode("" if (cur, ckey) == (mode, key) else mode, key)
+
+
+def cmd_roster(_args):
+    if not shutil.which("fzf"):
+        die("fzf is not installed")
+    set_mode("")
+    t = theme()
+    colors = t["fzf"] or ("bg+:#1b1f27,bg:#0a0b0e,fg:#d8dee9,fg+:#eceff4,hl:#88c0d0,hl+:#88c0d0,"
+                          "border:#88c0d0,label:#88c0d0,gutter:#0a0b0e,prompt:#81a1c1,pointer:#b48ead,"
+                          "marker:#a3be8c,info:#60697d,header:#6c7a96,spinner:#81a1c1")
+    me = os.path.realpath(sys.argv[0])
+    b = shlex.quote(me)
+    letters = "j,k,s,v,y,o,t,c,?,/,1,2,3,4,5,6,7,8,9"
+    rows = subprocess.run([me, "__rows"], capture_output=True, text=True).stdout
+    binds = [
+        "j:down", "k:up", "tab:down", "btab:up",
+        f"enter:become({b} jump {{1}})",
+        f"s:execute-silent({b} __stack-press {{1}})+refresh-preview",
+        f"v:execute-silent({b} design {{1}})",
+        f"y:execute-silent({b} design {{1}} --copy)",
+        f"o:execute-silent({b} __open-url {{1}})",
+        f"t:execute-silent({b} __ticket {{1}})",
+        f"c:execute-silent({b} __mode checklist {{1}})+refresh-preview",
+        f"?:execute-silent({b} __mode keys {{1}})+refresh-preview",
+        f"/:show-input+unbind({letters})",
+        # clear-query has to sit outside the transform: from inside one it clears the
+        # query without re-filtering the list
+        f"esc:clear-query+transform:[ \"$FZF_INPUT_STATE\" = hidden ] && echo abort || echo 'hide-input+rebind({letters})'",
+        f"every(3):reload({b} __rows)",
+    ] + [f"{n}:execute-silent({b} answer {{1}} {n})+reload({b} __rows)" for n in range(1, 10)]
+    cmd = [
+        "fzf", "--ansi", "--no-sort", "--reverse", "--height", "100%",
+        "--border=rounded", "--border-label", " \uf0ae  board ",       # U+F0AE tasks
+        "--prompt", " \uf002  ", "--pointer", "\uf0da", "--color", colors,  # magnifier, caret
+        "--delimiter", "\t", "--with-nth", "2..", "--id-nth", "1", "--track",
+        "--no-input", "--with-shell", "bash -c",
+        "--header", "⏎ jump · 1-9 answer · s s stack · v y design · o open · t ticket · c checklist · / filter · ? keys",
+        "--preview", f"{b} __preview {{1}}",
+        "--preview-window", "right:50%,border-left,wrap",
+    ]
+    for bd in binds:
+        cmd += ["--bind", bd]
+    r = subprocess.run(cmd, input=rows, text=True)
+    set_mode("")
+    sys.exit(0 if r.returncode in (0, 1, 130) else r.returncode)
+
+
+# ── dispatch ─────────────────────────────────────────────────────────────────────
+def main():
+    argv = sys.argv[1:]
+    cmd, args = (argv[0], argv[1:]) if argv else ("list", [])
+    table = {
+        "list": cmd_list, "ls": cmd_list,
+        "summary": cmd_summary, "pill": cmd_pill, "roster": cmd_roster,
+        "jump": cmd_jump, "next": cmd_next, "answer": cmd_answer,
+        "stack": cmd_stack, "design": cmd_design, "seen": cmd_seen, "keys": cmd_keys,
+        # roster internals
+        "__rows": lambda a: roster_rows(),
+        "__preview": lambda a: preview(a[0] if a else ""),
+        "__stack-press": lambda a: stack_press(a[0]),
+        "__mode": lambda a: toggle_mode(a[0], a[1]),
+        "__open-url": lambda a: open_stack_url(a[0]),
+        "__ticket": lambda a: open_ticket(a[0]),
+    }
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+        return
+    if cmd not in table:
+        die(f"unknown command {cmd} (try board --help)")
+    table[cmd](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        pass
+    except KeyboardInterrupt:
+        sys.exit(130)

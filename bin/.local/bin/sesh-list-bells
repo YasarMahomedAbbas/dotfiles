@@ -2,34 +2,26 @@
 # `sesh list` with a branch column and a Claude / pipeline status column added to
 # running tmux sessions:
 #
-#    issue-559    feat/frontend/quotation-room-description   ⏸ plan-brief
-#    issue-612    feat/frontend/wallet-statement             ▶ implement-plan
+#    issue-559    feat/frontend/quotation-room-description   ● needs you · Results
+#    issue-612    feat/frontend/wallet-statement             ▶ pnpm test 3m
 #    travelsmart  develop
 #    dotfiles
 #
-#   ⏸ <what>   red    — the session wants you: a permission prompt, an idle session
-#                       you never came back to, or a frontend-pipeline escalation.
-#   ▶ <stage>  yellow — Claude is working; for a pipeline session, on which stage.
-#   ✓ <what>   dim    — finished, nothing to do. Deliberately NOT an alert.
+#   ● needs you · <title>        red    — Claude is blocked on you (permission,
+#                                         question, plan approval)
+#   ▶ <what it runs> <elapsed>    fg0    — a turn is in progress; yellow + "slow"
+#                                         once it runs past its typical time
+#   ◐ background · N agents       blue   — the turn ended but agents/shells still run
+#   ✓ unseen                      green  — finished since you last looked at it
+#   (nothing)                            — idle, and you have seen it
 #
 # The branch is what tells two worktrees of the same project apart, which the session
 # name alone often doesn't — `issue-559` says which ticket but not what it became, and
 # a detached worktree shows `@<sha>` so a run that hasn't branched yet is obvious.
 #
-# Status has two independent sources, and the alert states of either win:
-#
-#   1. `pipeline-status`, called by the frontend-pipeline orchestrator, which stamps
-#      @pipeline_state / @pipeline_label. It is the only source that can report a
-#      parked decision: a stage that stops to ask something ends its turn exactly
-#      like one that finished.
-#   2. Claude Code's hooks (~/.claude/settings.json -> claude-hook-state), which
-#      stamp @claude_state for everything else.
-#
-# `done` exists to stop the bell firing at random. The Stop hook runs at the end of
-# EVERY assistant turn, including between the pipeline's stage subagents where Claude
-# carries straight on — so turn-end is not "needs you" and must not ring. Only a
-# permission prompt (immediate) and Notification/idle_prompt (~60s after a turn with
-# no input from you) are alerts.
+# Status comes from the agent board (`board list --json`, docs/agent-board.md): ONE
+# call per render, not per row. A session running several Claudes shows the most
+# urgent one — board's own order (needs_you > working > background > unseen > idle).
 #
 # Row order is FIXED — it never changes when you switch sessions or a Claude changes
 # state, so you can find things by position. sesh's own order is most-recently-used,
@@ -49,7 +41,7 @@
 # both twins. Keying off `sesh list -t` (byte-identical rows, sessions only) is what
 # keeps the config/zoxide views clean.
 #
-# Cost note: everything tmux knows is fetched in three global calls rather than per
+# Cost note: tmux is asked in two global calls and the board in one, rather than per
 # row, and git is asked only about rows that are actually running sessions (a handful,
 # not the ~30 config/zoxide rows). This runs on picker open and on the ctrl-a/t/c/x
 # reloads — not on every keystroke, since fzf filters in process.
@@ -57,21 +49,60 @@
 # shellcheck disable=SC1090
 [ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
 rgb() { printf '\033[38;2;%d;%d;%dm' "$((16#${1:0:2}))" "$((16#${1:2:2}))" "$((16#${1:4:2}))"; }
-C_ALERT="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
-C_BUSY="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
-C_DONE="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
-C_BRANCH="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
+fzfc() { printf '%s' "${SESH_FZF_COLORS:-}" | tr ',' '\n' | sed -n "s/^$1:#//p" | head -1; }
+C_RED="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+C_YELLOW="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
+C_GREEN="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
+C_DIM="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
+# fg0 / blue joined sesh-colors.sh with the board; until the next theme-switch they
+# come out of the fzf colour string (fg+ is fg0, prompt is blue).
+h_fg0="${SESH_FG0_COLOR:-$(fzfc 'fg+')}";   C_FG0="$(rgb "${h_fg0:-eceff4}")"
+h_blue="${SESH_BLUE_COLOR:-$(fzfc prompt)}"; C_BLUE="$(rgb "${h_blue:-81a1c1}")"
+C_BRANCH="$C_DIM"
 C_OFF=$'\033[0m'
 
-G_ALERT="$(printf '\xef\x83\xb3')"   # U+F0F3 bell
-G_BUSY="$(printf '\xef\x81\xb5')"    # U+F075 comment
-G_DONE="$(printf '\xef\x80\x8c')"    # U+F00C check
-
-# --- Everything tmux knows, in three calls --------------------------------------
-sessions_raw="$(tmux list-sessions -F '#{session_name}|#{@claude_state}|#{@claude_detail}|#{@claude_pane}|#{@pipeline_state}|#{@pipeline_label}|#{session_attached}' 2>/dev/null)"
+# --- Everything tmux and the board know, in three calls ---------------------------
 windows_raw="$(tmux list-windows -a -F '#{session_name}|#{window_name}|#{pane_current_path}' 2>/dev/null)"
-panes_raw="$(tmux list-panes -a -F '#{session_name}|#{pane_id}' 2>/dev/null)"
 session_rows="$(sesh list -t --icons 2>/dev/null)"
+
+# One line per Claude: session <TAB> colour role <TAB> status text. jq's @tsv escapes
+# any tab or newline in a tool's detail, so a row can never split.
+board_raw="$(board list --json 2>/dev/null | jq -r --argjson now "$(date +%s%3N)" '
+  def el: (. / 1000 | floor) as $s
+    | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s / 60 | floor)m"
+      else "\($s / 3600 | floor)h\(($s % 3600) / 60 | floor | tostring | if length < 2 then "0" + . else . end)m" end;
+  def plural($n; $w): "\($n) \($w)\(if $n == 1 then "" else "s" end)";
+  .[] | select(.tmux.session != null) |
+  (if .stale then ["dim", "○ stale"]
+   elif .state == "needs_you" then ["red", "● needs you · \(.attention.title // .attention.kind // "?")"]
+   elif .state == "working" then
+     (.current // {}) as $c | ($now - ($c.started // .since // $now)) as $e
+     | (($c.typical_ms // 0) > 0 and $e > $c.typical_ms) as $slow
+     | [(if $slow then "yellow" else "fg0" end),
+        "▶ \($c.detail // $c.tool // "working") \($e | el)\(if $slow then " slow" else "" end)"]
+   elif .state == "background" then
+     ([.agents[]? | select(.status == "running" or .status == "needs_you")] | length) as $a
+     | ([.shells[]? | select(.status == "running")] | length) as $sh
+     | ["blue", "◐ background · \(if $a > 0 or $sh == 0 then plural($a; "agent") else plural($sh; "shell") end)"]
+   elif .unseen then ["green", "✓ unseen"]
+   else ["", ""] end) as $s
+  | [.tmux.session, $s[0], $s[1]] | @tsv' 2>/dev/null)"
+
+# status_for <session> -> the coloured status text, or nothing. board's list is sorted
+# most-urgent first, so the first line for a session is the one to show.
+status_for() {
+    local role text
+    IFS=$'\t' read -r _ role text < <(printf '%s\n' "$board_raw" | awk -F'\t' -v s="$1" '$1 == s { print; exit }')
+    [ -z "$text" ] && return
+    case "$role" in
+        red)    printf '%s%s%s' "$C_RED"    "$text" "$C_OFF" ;;
+        yellow) printf '%s%s%s' "$C_YELLOW" "$text" "$C_OFF" ;;
+        fg0)    printf '%s%s%s' "$C_FG0"    "$text" "$C_OFF" ;;
+        blue)   printf '%s%s%s' "$C_BLUE"   "$text" "$C_OFF" ;;
+        green)  printf '%s%s%s' "$C_GREEN"  "$text" "$C_OFF" ;;
+        *)      printf '%s%s%s' "$C_DIM"    "$text" "$C_OFF" ;;
+    esac
+}
 
 # branch_for <session> — the checked-out branch of the session's working directory,
 # resolved from its `claude` window (falling back to the first): tmux 3.7's
@@ -80,61 +111,11 @@ session_rows="$(sesh list -t --icons 2>/dev/null)"
 # as @<short-sha> rather than nothing, so "no branch yet" is visible instead of blank.
 branch_for() {
     local s="$1" dir
-    dir="$(printf '%s\n' "$windows_raw" | sed -n "s/^${s}|claude|//p" | head -1)"
-    [ -z "$dir" ] && dir="$(printf '%s\n' "$windows_raw" | sed -n "s/^${s}|[^|]*|//p" | head -1)"
+    dir="$(printf '%s\n' "$windows_raw" | awk -F'|' -v s="$s" '$1 == s && $2 == "claude" { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }')"
+    [ -z "$dir" ] && dir="$(printf '%s\n' "$windows_raw" | awk -F'|' -v s="$s" '$1 == s { sub(/^[^|]*\|[^|]*\|/, ""); print; exit }')"
     [ -z "$dir" ] || [ ! -d "$dir" ] && return
     git -C "$dir" symbolic-ref --short -q HEAD 2>/dev/null && return
     local sha; sha="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)" && [ -n "$sha" ] && printf '@%s\n' "$sha"
-}
-
-# status_for <session> -> "rank<TAB>coloured status text"; rank 0 alert / 1 busy / 2 done.
-status_for() {
-    local s="$1" state detail pane pstate plabel attached winlabel mark rest
-    IFS='|' read -r _ state detail pane pstate plabel attached <<< "$(printf '%s\n' "$sessions_raw" | grep -m1 "^${s}|")"
-
-    # (1) The pipeline's own state, stamped by `pipeline-status` at every stage
-    # boundary and escalation. Preferred over everything: it is the only source that
-    # knows a human decision is parked, because the Claude holding it ended its turn
-    # entirely normally.
-    case "$pstate" in
-        blocked) printf '0\t%s%s %s%s' "$C_ALERT" "$G_ALERT" "${plabel:-needs you}" "$C_OFF"; return ;;
-        running) printf '1\t%s%s %s%s' "$C_BUSY"  "$G_BUSY"  "${plabel:-working}"   "$C_OFF"; return ;;
-        done)    printf '2\t%s%s %s%s' "$C_DONE"  "$G_DONE"  "${plabel:-done}"      "$C_OFF"; return ;;
-    esac
-
-    # (2) The window name, for a run started before pipeline-status existed or renamed
-    # by hand. `issue-830 ⏸ plan-brief` -> mark ⏸, rest "plan-brief".
-    winlabel="$(printf '%s\n' "$windows_raw" | sed -n "s/^${s}|//p" | cut -d'|' -f1 | grep -m1 -E '(▶|⏸|✓)')"
-    if [ -n "$winlabel" ]; then
-        mark="$(printf '%s' "$winlabel" | grep -oE '(▶|⏸|✓)' | head -1)"
-        rest="$(printf '%s' "$winlabel" | sed -E "s/^.*(▶|⏸|✓)[[:space:]]*//")"
-        case "$mark" in
-            '⏸') printf '0\t%s%s %s%s' "$C_ALERT" "$G_ALERT" "${rest:-needs you}" "$C_OFF"; return ;;
-            '▶') printf '1\t%s%s %s%s' "$C_BUSY"  "$G_BUSY"  "${rest:-working}"   "$C_OFF"; return ;;
-            '✓') printf '2\t%s%s %s%s' "$C_DONE"  "$G_DONE"  "${rest:-done}"      "$C_OFF"; return ;;
-        esac
-    fi
-
-    # (3) Claude's hook state. Trust it only if the pane it names still lives here —
-    # a stale pane id means the flag outlived the Claude that set it.
-    [ -z "$state" ] && return
-
-    # A session you are attached to is a session you can already see, so its Claude
-    # alerts are not news: idle_prompt fires 60s after any turn ends, which would
-    # otherwise leave a red bell on the very session you are sitting in. Pipeline
-    # states above are exempt — those describe the ticket, not your attention.
-    if [ "${attached:-0}" != "0" ]; then
-        case "$state" in blocked|waiting|done) return ;; esac
-    fi
-    if [ -n "$pane" ] && ! printf '%s\n' "$panes_raw" | grep -qxF -- "${s}|${pane}"; then
-        return
-    fi
-    case "$state" in
-        blocked) printf '0\t%s%s %s%s' "$C_ALERT" "$G_ALERT" "${detail:-permission}" "$C_OFF" ;;
-        waiting) printf '0\t%s%s %s%s' "$C_ALERT" "$G_ALERT" "${detail:-waiting}"    "$C_OFF" ;;
-        working) printf '1\t%s%s %s%s' "$C_BUSY"  "$G_BUSY"  "${detail:-working}"    "$C_OFF" ;;
-        done)    printf '2\t%s%s %s%s' "$C_DONE"  "$G_DONE"  "${detail:-done}"       "$C_OFF" ;;
-    esac
 }
 
 vis() { printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g'; }
@@ -151,9 +132,7 @@ while IFS= read -r line; do
     fi
     name="$(sesh-clean-name "$line")"
     branch="$(branch_for "$name")"
-    st="$(status_for "$name")"
-    text=""
-    [ -n "$st" ] && text="${st#*$'\t'}"
+    text="$(status_for "$name")"
 
     v="$(vis "$line")";   [ "${#v}" -gt "$namewidth" ]   && namewidth="${#v}"
     [ "${#branch}" -gt "$branchwidth" ] && branchwidth="${#branch}"

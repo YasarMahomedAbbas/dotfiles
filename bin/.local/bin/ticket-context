@@ -16,10 +16,10 @@
 # reads the same evidence the orchestrator does rather than keeping a second state
 # file that could disagree with it.
 #
-# Consumers: sesh-preview (the picker's ticket card), agent-sidebar, ticket-pill and
-# ticket-window (the ticket window's stage line and plan summary). Kept out of sesh-list-bells
-# on purpose — the list runs this per row on every keystroke-reload, and the git
-# calls below are far too slow for that. The list uses window names only.
+# Consumers: board (the agent board's `ticket`, cached 30 s per worktree), sesh-preview
+# (the picker's ticket card), ticket-pill and ticket-window (the ticket window's stage
+# line and plan summary). sesh-list-bells never calls it per row; it gets the board's
+# cached view in one `board list --json`.
 
 set -u
 

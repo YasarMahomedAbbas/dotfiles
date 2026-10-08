@@ -15,7 +15,7 @@ Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
 ┌──────┬──────┬──────┬──────┬──────┐
 │ sess │ sess │ sess │ sess │ sess │  keys 0–4  — sessions, alphabetical (alerts always shown)
 ├──────┼──────┼──────┼──────┼──────┤
-│MEDIA │ WORK │      │ VPS  │      │  key 5 opens media, 6 opens work, 8 opens VPS; 7 & 9 blank
+│MEDIA │ WORK │      │ VPS  │DESIGN│  key 5 media, 6 work, 8 VPS, 9 newest design; 7 blank
 ├──────┼──────┼──────┼──────┼──────┤
 │ PICK │THEME │      │ MIC  │ MUTE │  keys 10–14 — actions (12 blank)
 └──────┴──────┴──────┴──────┴──────┘
@@ -25,7 +25,7 @@ Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
 positions stay stable (muscle memory), up to five. The key shows the session name — or, if
 the session is a configured work project with a logo, that logo instead (keyed by session
 name, so e.g. a running `travelsmart` or `vault` shows its mark) — over a **label band**
-naming the pipeline stage or Claude's reason for wanting you:
+naming what Claude wants or is doing (the question's title, the stage, "2 agents"):
 
 ```
 ┌──────────┐
@@ -42,16 +42,17 @@ otherwise only discoverable by attaching:
 
 | Color | Meaning | Driven by |
 |---|---|---|
-| 🔴 red | Needs you — a parked pipeline decision, a permission prompt, or a session idle 60s+ | `@pipeline_state=blocked`, `@claude_state=blocked\|waiting` |
-| 🟡 amber | Working | `@pipeline_state=running`, `@claude_state=working` |
-| 🟢 muted green | A finished pipeline — PR up, nothing to do | `@pipeline_state=done` |
+| 🔴 red | Needs you — a permission prompt, a question, a plan to approve | `state: needs_you` |
+| ⚪ frost (fg0) | Working | `state: working` |
+| 🟡 yellow | Working past the command's typical time | `current.typical_ms` exceeded |
+| 🔵 steel blue | Turn ended, agents / shells still running | `state: background` |
+| 🟢 green | Finished since you last looked | `unseen: true` |
 | ⚫ dim slate | Idle session | — |
 | cyan border | The session your terminal is currently attached to | most-recent tmux client |
 
-A turn merely *ending* is **not** an alert — see [How it works](#how-it-works). A session
-you're attached to never shows a Claude alert either: you can already see it. The state machine
-behind these colours, and the two commands that write it, are documented once in
-**[agent-status.md](agent-status.md)**.
+The state behind these colours comes from `board list --json` — one call per poll — and is
+documented once in **[agent-board.md](agent-board.md)**. A session running several Claudes
+shows its most urgent one.
 
 **When there are more sessions than slots**, the alerting ones are guaranteed a key rather
 than falling off the end of the alphabet — the row exists so a glance tells you which agent
@@ -59,17 +60,19 @@ needs you, and that fails if the one that does is off-deck. With five or fewer, 
 purely alphabetical as before.
 
 Colors follow the active theme (`~/.config/theme/sesh-colors.sh` — the same
-`SESH_BELL_COLOR` / `SESH_BUSY_COLOR` the sesh picker uses), and update live when you
-run `theme-switch`.
+`SESH_*_COLOR` values the sesh picker and `board` use), and update live when you run
+`theme-switch`.
 
-**Press a session key** → switches your most-recently-active tmux client to that session
-and focuses the terminal window (same as pressing a project on the work page). If no tmux
-client is attached anywhere, it jumps to workspace 1 and launches ghostty attached to the
-session.
+**Press a session key** → `board jump <key>`: switches your most-recently-active tmux client
+to that Claude's pane and focuses the terminal window (a session with no Claude just
+switches, as the work page does). If no tmux client is attached anywhere, a ghostty is
+launched attached to the session.
 
 **MEDIA (key 5)** — opens the media page (below). **WORK (key 6)** — opens the work
-(project launcher) page (below). **VPS (key 8)** — opens the VPS page (below). The rest
-of the middle row (keys 7 & 9) is blank.
+(project launcher) page (below). **VPS (key 8)** — opens the VPS page (below).
+**DESIGN (key 9)** — a brush in the theme accent (with an accent border) when any session
+has published a design canvas; press to open the newest one (`board design <key>`). Dim
+otherwise. Key 7 is blank.
 
 **Actions (keys 10–14):**
 
@@ -137,8 +140,8 @@ what's already running:
 | Border | Meaning |
 |---|---|
 | cyan | The session your terminal is currently attached to |
-| 🔴 red | Live — Claude needs you (`@pipeline_state=blocked`, `@claude_state=blocked\|waiting`) |
-| 🟡 amber | Live — Claude working (`@pipeline_state=running`, `@claude_state=working`) |
+| 🔴 red | Live — Claude needs you |
+| ⚪ / 🟡 / 🔵 | Live — Claude working / slow / background agents |
 | 🟢 green | Live — running but idle, or a finished pipeline |
 | none | Not running |
 
@@ -232,17 +235,9 @@ library and Pillow for key images. It:
 
 - polls tmux roughly once a second (`POLL = 1.0`) and re-renders **only** the keys whose
   appearance changed, keeping USB traffic minimal;
-- reads status with the same precedence and guard as `sesh-list-bells`: `@pipeline_state`
-  first (the only source that can report a parked human decision — a stage that stops to ask
-  something ends its turn exactly like one that finished), then `@claude_state`. A turn
-  merely *ending* (`@claude_state=done`) is **not** an alert; treating it as one is what
-  used to light this red at random, because the `Stop` hook fires between every pipeline
-  stage. `@claude_state` is paired with a pane id, and only counts if that pane still exists
-  **and** belongs to the session — so a hook that mis-stamps the option onto the wrong
-  session never lights a wrong key. A session you are attached to shows no Claude alert at
-  all: you can already see it. Both option sets are read in **two** tmux calls per poll for
-  the whole deck, not per key. The options are set by `pipeline-status` and by Claude Code
-  hooks in `~/.claude/settings.json` (via `claude-hook-state`);
+- reads Claude status from the agent board — one `board list --json` per poll for the whole
+  deck (see [agent-board.md](agent-board.md)); `board` itself caches its enrichment
+  (ticket-context 30 s, wt-dev 5 s), so the poll stays cheap;
 - handles key presses on a background thread, then refreshes immediately so toggles feel
   instant;
 - launches every GUI child (ghostty terminals for session/work/VPS) in its **own transient
@@ -308,6 +303,7 @@ Everything tunable is a config block at the top of
 | Media button | `MEDIA_KEY` | main-page key that opens the media page (default 5) |
 | Work button | `WORK_KEY` | main-page key that opens the work page (default 6) |
 | VPS button | `VPS_KEY` | main-page key that opens the VPS page (default 8) |
+| Design button | `DESIGN_KEY` | main-page key that opens the newest design canvas (default 9) |
 | Theme button | `THEME_KEY` | main-page action key that opens the theme picker (default 11) |
 | Theme key range | `THEME_SLOTS` / `THEME_BACK_KEY` | picker-page slots (0–9) and BACK (10) |
 | Work key range | `WORK_SLOTS` / `WORK_BACK_KEY` | work-page slots (0–9) and BACK (10) |
@@ -316,7 +312,7 @@ Everything tunable is a config block at the top of
 | VPS hosts | `VPS_HOSTS` | ordered `(ssh_alias, label, logo_file, glyph)` rows for the VPS page; alias must be a `~/.ssh/config` Host |
 | Logos | `LOGO_DIR` | where work-page logo PNGs live (`~/.local/share/streamdeck-dashboard/logos`) |
 | Picker command | `PICKER_POPUP` | the `display-popup` args for the PICK key |
-| Colors | `COLORS` | fallback palette; `alert`/`busy` are overridden live from the theme |
+| Colors | `COLORS` | fallback palette; the status roles (`alert`, `busy`, `slow`, `background`, `done`, `design`) are overridden live from the theme |
 | Action keys | `ACTIONS` dict | main-page actions — `{key: (glyph, label, is_active_fn, handler_fn)}` |
 | Media keys | `MEDIA_ACTIONS` dict | media-page keys, same tuple shape; key 10 (`None` handler) is BACK |
 | Active-state glyphs | `ACTIVE_GLYPH` | glyph swap when a toggle is active (e.g. mic-muted) |
@@ -365,7 +361,7 @@ shutdown, and logs a traceback (without dying) if a poll cycle errors.
 | `No module named 'StreamDeck'` | venv missing or stale — re-run `streamdeck-dashboard-setup`. |
 | Names/positions mirrored | Key indexing assumes top-left origin; if a future deck differs, remap `SESSION_SLOTS`. |
 | PICK / MIC do nothing | The service needs the graphical env; it inherits `WAYLAND_DISPLAY` from the user session. Check `systemctl --user show-environment | grep WAYLAND`. |
-| Wrong session lit | Status uses pane-ownership; if it persists, check the `@claude_*` hooks in `~/.claude/settings.json` (they must resolve the session via `-t "$TMUX_PANE"`). |
+| Wrong session lit | Compare with `board list` — the key shows the first entry whose `tmux.session` matches. A stale state file shows as `stale` there and is ignored. |
 | Work page shows glyphs, no logos | Logos not stowed — `stow --restow streamdeck` so `~/.local/share/streamdeck-dashboard/logos/` is populated (new files aren't linked by a plain `stow`). A missing logo silently falls back to the glyph. |
 | WORK key does nothing / opens wrong dir | The project's `name` in `WORK_PROJECTS` must match its `sesh.toml` session name; `sesh connect` resolves the path/layout from there. Focus needs `hyprctl` + `ghostty` on the service PATH (both in `/usr/bin`). |
 | Colors don't match theme | `theme-switch` writes `~/.config/theme/sesh-colors.sh`; the daemon re-reads it each poll. |

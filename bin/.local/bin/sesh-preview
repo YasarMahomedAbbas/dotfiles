@@ -30,6 +30,9 @@ C_TEXT="$(rgb "${SESH_TEXT_COLOR:-d8dee9}")"
 C_OK="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
 C_WARN="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
 C_ALERT="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+fzfc() { printf '%s' "${SESH_FZF_COLORS:-}" | tr ',' '\n' | sed -n "s/^$1:#//p" | head -1; }
+h_fg0="${SESH_FG0_COLOR:-$(fzfc 'fg+')}";   C_FG0="$(rgb "${h_fg0:-eceff4}")"
+h_blue="${SESH_BLUE_COLOR:-$(fzfc prompt)}"; C_BLUE="$(rgb "${h_blue:-81a1c1}")"
 C_RESET=$'\033[0m'
 
 rule() { printf "${C_DIM}  %s${C_RESET}\n" "────────────────────────────────────────────"; }
@@ -37,45 +40,53 @@ rule() { printf "${C_DIM}  %s${C_RESET}\n" "────────────
 # ---------------------------------------------------------------- running session
 if tmux has-session -t "=$name" 2>/dev/null; then
 
-    # Status, from the same three sources sesh-list-bells reads, in the same order:
-    # the pipeline's own stamped state, then its window name, then Claude's hooks.
-    pstate="$(tmux show-options -t "$name" -qv @pipeline_state 2>/dev/null)"
-    plabel="$(tmux show-options -t "$name" -qv @pipeline_label 2>/dev/null)"
-    winlabel="$(tmux list-windows -t "=$name" -F '#{window_name}' 2>/dev/null | grep -m1 -E '(▶|⏸|✓)')"
-    hstate="$(tmux show-options -t "$name" -qv @claude_state 2>/dev/null)"
-    hdetail="$(tmux show-options -t "$name" -qv @claude_detail 2>/dev/null)"
-    hpane="$(tmux show-options -t "$name" -qv @claude_pane 2>/dev/null)"
-    # A flag whose pane has gone (or moved session) outlived its Claude — drop it.
-    if [ -n "$hpane" ] && \
-       [ "$(tmux display-message -p -t "$hpane" '#{session_name}' 2>/dev/null)" != "$name" ]; then
-        hstate=""; hpane=""
-    fi
+    # Status, from the agent board (`board list --json`, docs/agent-board.md) — the
+    # same source sesh-list-bells reads. The first entry for this session is its most
+    # urgent Claude (board sorts needs_you > working > background > unseen > idle).
+    # Tab-separated: state, banner text, pane, then the question and its options.
+    board_line="$(board list --json 2>/dev/null | jq -r --arg s "$name" --argjson now "$(date +%s%3N)" '
+      def el: (. / 1000 | floor) as $x
+        | if $x < 60 then "\($x)s" elif $x < 3600 then "\($x / 60 | floor)m" else "\($x / 3600 | floor)h\(($x % 3600) / 60 | floor)m" end;
+      [.[] | select(.tmux.session == $s)] | first // empty
+      | (if .stale then "stale"
+         elif .state == "working" and ((.current.typical_ms // 0) > 0)
+              and ($now - (.current.started // $now)) > .current.typical_ms then "slow"
+         elif .state == "idle" and .unseen then "unseen" else .state end) as $st
+      | (if .stale then "stale · Claude is gone"
+         elif .state == "needs_you" then "needs you · \(.attention.title // .attention.kind // "?")"
+         elif .state == "working" then "working · \(.current.detail // .current.tool // "turn in progress") \(($now - (.current.started // .since // $now)) | el)\(if $st == "slow" then " · slow" else "" end)"
+         elif .state == "background" then "background · \([.agents[]? | select(.status == "running")] | length) agents · \([.shells[]? | select(.status == "running")] | length) shells"
+         elif .unseen then "done · unseen"
+         else "idle" end) as $banner
+      | [$st, $banner, (.tmux.pane // ""), (.attention.text // ""),
+         ([.attention.options[]? | "\(.key)  \(.label)"] | join("\u001f"))] | @tsv' 2>/dev/null)"
+    bstate="" banner="" hpane="" question="" options=""
+    [ -n "$board_line" ] && IFS=$'\t' read -r bstate banner hpane question options <<< "$board_line"
 
-    banner="" bcol="$C_DIM"
-    if [ -n "$pstate" ]; then
-        case "$pstate" in
-            blocked) bcol="$C_ALERT"; banner="needs you · ${plabel:-decision}" ;;
-            running) bcol="$C_WARN";  banner="working · ${plabel:-in progress}" ;;
-            done)    bcol="$C_OK";    banner="done · ${plabel:-finished}" ;;
-        esac
-    elif [ -n "$winlabel" ]; then
-        case "$winlabel" in
-            *⏸*) bcol="$C_ALERT"; banner="needs you · $(printf '%s' "$winlabel" | sed -E 's/^.*⏸[[:space:]]*//')" ;;
-            *▶*) bcol="$C_WARN";  banner="working · $(printf '%s' "$winlabel" | sed -E 's/^.*▶[[:space:]]*//')" ;;
-            *✓*) bcol="$C_OK";    banner="done · $(printf '%s' "$winlabel" | sed -E 's/^.*✓[[:space:]]*//')" ;;
-        esac
-    elif [ -n "$hstate" ]; then
-        case "$hstate" in
-            blocked) bcol="$C_ALERT"; banner="needs you · ${hdetail:-permission}" ;;
-            waiting) bcol="$C_ALERT"; banner="waiting · ${hdetail:-no input for a while}" ;;
-            working) bcol="$C_WARN";  banner="working${hdetail:+ · $hdetail}" ;;
-            done)    bcol="$C_OK";    banner="idle · turn finished" ;;
-        esac
-    fi
+    case "$bstate" in
+        needs_you) bcol="$C_ALERT" ;;
+        working)   bcol="$C_FG0" ;;
+        slow)      bcol="$C_WARN" ;;
+        background) bcol="$C_BLUE" ;;
+        unseen)    bcol="$C_OK" ;;
+        *)         bcol="$C_DIM" ;;
+    esac
+    [ "$bstate" = "idle" ] && banner=""
 
     printf "${C_ACCENT}  %s${C_RESET}" "$name"
     [ -n "$banner" ] && printf "   ${bcol}%s${C_RESET}" "$banner"
     printf "\n\n"
+
+    # The question Claude is blocked on, and what 1..9 would answer (board answer).
+    if [ "$bstate" = "needs_you" ] && [ -n "$question" ]; then
+        printf '%s\n' "$question" | fold -s -w 70 | sed -e "s/^/  /" -e "s/^/$(printf '%s' "$C_TEXT")/" -e "s/\$/$(printf '%s' "$C_RESET")/"
+        if [ -n "$options" ]; then
+            printf '%s\n' "$options" | tr '\037' '\n' | while IFS= read -r o; do
+                printf "    ${C_ALERT}%s${C_RESET}\n" "$o"
+            done
+        fi
+        printf "\n"
+    fi
 
     # ------------------------------------------------------------- the ticket card
     dir="" root="" branch="" slug="" issue="" title="" problem="" stage="" stage_index=""
@@ -153,7 +164,7 @@ if tmux has-session -t "=$name" 2>/dev/null; then
     # this is only here for the case where Claude is parked on a question.
     lines=14
     target=""
-    if [ -n "$hpane" ] && tmux capture-pane -p -t "$hpane" >/dev/null 2>&1; then
+    if [ -n "$hpane" ] && [ "$(tmux display-message -p -t "$hpane" '#{session_name}' 2>/dev/null)" = "$name" ]; then
         target="$hpane"
     else
         aw="$(tmux list-windows -t "=$name" -F '#{window_index}:#{window_active}' | awk -F: '$2==1{print $1; exit}')"

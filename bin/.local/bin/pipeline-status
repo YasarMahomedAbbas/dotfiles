@@ -1,24 +1,19 @@
 #!/bin/bash
 # pipeline-status <running|blocked|done> <label> — announce where a frontend-pipeline
-# run has got to, for the sesh picker and the tmux status bar.
+# run has got to, for the agent board (`board`).
 #
 #   pipeline-status running implement-plan
 #   pipeline-status blocked plan-brief
 #   pipeline-status done    PR
 #
 # Called by the frontend-pipeline orchestrator at each stage boundary and each
-# escalation. It writes the same fact twice, on purpose:
+# escalation. It stamps @pipeline_state / @pipeline_label session options; `board`
+# (docs/agent-board.md) surfaces the label as the session's stage when ticket-context
+# cannot tell it from the ticket folder.
 #
-#   - the window name (`issue-42 ▶ implement-plan`), which is what you read when
-#     you are already attached and looking at the status bar; and
-#   - @pipeline_state / @pipeline_label session options, which is what the picker
-#     reads, because a session's windows may be renamed or added to by anything.
-#
-# These are kept separate from @claude_state (claude-hook-state). Claude's own hooks
-# describe the *process* — is a turn running, is a permission prompt up — while this
-# describes the *pipeline*, which spans many turns and many subagents. A pipeline
-# parked on a plan-brief question has a Claude that ended its turn perfectly normally,
-# so only this can say that a human decision is outstanding; the picker prefers it.
+# It used to rename the window too (`issue-42 ▶ implement-plan`). It no longer does:
+# Claude's live state now comes from the agent board's state files, and a renamed
+# window only ever went stale.
 
 set -u
 state="${1:-}"; label="${2:-}"
@@ -27,9 +22,8 @@ state="${1:-}"; label="${2:-}"
 # Resolve the session from THIS pane, not from the current client. `display-message -p`
 # with no target answers for whichever client tmux considers current, which with two
 # clients attached can be a different session entirely — the orchestrator would then
-# stamp its state onto someone else's session and rename their window. Same reason
-# claude-hook-state keys off $TMUX_PANE; fall back to the untargeted form only when the
-# variable is missing.
+# stamp its state onto someone else's session. Fall back to the untargeted form only
+# when $TMUX_PANE is missing.
 target=""
 [ -n "${TMUX_PANE:-}" ] && target="$TMUX_PANE"
 if [ -n "$target" ]; then
@@ -40,9 +34,7 @@ fi
 [ -z "$session" ] && exit 0
 
 case "$state" in
-    running) mark='▶' ;;
-    blocked) mark='⏸' ;;
-    done)    mark='✓' ;;
+    running|blocked|done) ;;
     "")      # clear
         tmux set-option -t "$session" -u @pipeline_state 2>/dev/null
         tmux set-option -t "$session" -u @pipeline_label 2>/dev/null
@@ -52,9 +44,4 @@ esac
 
 tmux set-option -t "$session" @pipeline_state "$state" 2>/dev/null
 tmux set-option -t "$session" @pipeline_label "$label" 2>/dev/null
-if [ -n "$target" ]; then
-    tmux rename-window -t "$target" "$session $mark $label" 2>/dev/null
-else
-    tmux rename-window "$session $mark $label" 2>/dev/null
-fi
 exit 0
