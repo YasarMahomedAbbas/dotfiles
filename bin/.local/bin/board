@@ -606,7 +606,7 @@ def tmux_client():
 
 def focus_terminal():
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
-        run(["hyprctl", "dispatch", "focuswindow", f"class:{GHOSTTY_CLASS}"])
+        run(["hyprctl", "dispatch", f'hl.dsp.focus({{ window = "class:{GHOSTTY_CLASS}" }})'])
 
 
 def jump(e):

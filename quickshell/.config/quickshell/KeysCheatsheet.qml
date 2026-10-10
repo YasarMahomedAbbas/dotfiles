@@ -5,8 +5,8 @@ import Quickshell.Io
 
 // The keys cheatsheet (SUPER+/, or ? in the roster and the wall), built from the
 // live config so it can't go stale:
-//   Hyprland  `hyprctl binds -j` — only binds with a description (`bindd`), grouped
-//             by the "Group: what it does" prefix (see hyprland.conf's KEYBINDINGS)
+//   Hyprland  `hyprctl binds -j` — only binds with a description, grouped by the
+//             "Group: what it does" prefix (see hyprland.lua's KEYBINDINGS)
 //   board     `board keys --json` — the roster's keys (built-in table as fallback)
 //   tmux      `tmux list-keys -N` — keys that carry a note
 // Type to filter · ↑/↓ (Tab) pick a Hyprland bind · ⏎ runs it · esc closes.
@@ -68,7 +68,7 @@ Item {
             var g = c > 0 ? d.slice(0, c) : "Other", t = c > 0 ? d.slice(c + 2) : d
             var item = { src: "hypr", group: g, mask: b.modmask, key: b.key,
                          keys: modKeys(b.modmask).concat([keyName(b.key)]), desc: t,
-                         run: b.mouse ? null : { d: b.dispatcher, a: b.arg || "" } }
+                         run: b.key.indexOf("mouse:") === 0 ? null : d }
             // fold runs like "Go to workspace 1" … "Go to workspace 10" into one "1–0" line
             var prev = out[out.length - 1], m = t.match(/^(.*\D)\s(\d+)$/)
             if (m && prev && prev.group === g && prev.mask === b.modmask && prev.base === m[1]) {
@@ -203,7 +203,9 @@ Item {
         interval: 120
         onTriggered: {
             var r = root.pending; root.pending = null
-            if (r) Quickshell.execDetached(["hyprctl", "dispatch", r.d].concat(r.a ? [r.a] : []))
+            // Lua binds report only an opaque id, so run the dispatcher hyprland.lua
+            // registered under the bind's description (its global BINDS table)
+            if (r) Quickshell.execDetached(["hyprctl", "dispatch", "BINDS[" + JSON.stringify(r) + "]"])
         }
     }
 

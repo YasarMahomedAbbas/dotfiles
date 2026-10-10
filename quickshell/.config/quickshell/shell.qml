@@ -4,16 +4,16 @@ import Quickshell.Hyprland
 ShellRoot {
     Bar { id: bar }
 
-    // SUPER+W registered in hyprland.conf as:
-    // bindd = $mainMod, W, Shell: Toggle bar, global, quickshell:togglebar
+    // SUPER+W registered in hyprland.lua as:
+    // bind(mainMod .. " + W", "Shell: Toggle bar", global("quickshell:togglebar"))
     GlobalShortcut {
         name: "togglebar"
         description: "Toggle bar visibility"
         onPressed: bar.visible = !bar.visible
     }
 
-    // SUPER+SHIFT+W registered in hyprland.conf as:
-    // bindd = $mainMod SHIFT, W, Shell: Dashboard, global, quickshell:toggledashboard
+    // SUPER+SHIFT+W registered in hyprland.lua as:
+    // bind(mainMod .. " + SHIFT + W", "Shell: Dashboard", global("quickshell:toggledashboard"))
     GlobalShortcut {
         name: "toggledashboard"
         description: "Toggle dashboard popup"
@@ -30,32 +30,32 @@ ShellRoot {
         onOpenRoster: bar.toggleRoster()
     }
 
-    // SUPER+G registered in hyprland.conf as:
-    // bindd = $mainMod, G, Agents: Roster, global, quickshell:roster
+    // SUPER+G registered in hyprland.lua as:
+    // bind(mainMod .. " + G", "Agents: Roster", global("quickshell:roster"))
     GlobalShortcut {
         name: "roster"
         description: "Agent board roster"
         onPressed: bar.toggleRoster()
     }
 
-    // SUPER+SHIFT+G registered in hyprland.conf as:
-    // bindd = $mainMod SHIFT, G, Agents: Checklist wall, global, quickshell:wall
+    // SUPER+SHIFT+G registered in hyprland.lua as:
+    // bind(mainMod .. " + SHIFT + G", "Agents: Checklist wall", global("quickshell:wall"))
     GlobalShortcut {
         name: "wall"
         description: "Agent board checklist wall"
         onPressed: bar.toggleWall("")
     }
 
-    // SUPER+/ registered in hyprland.conf as:
-    // bindd = $mainMod, slash, Agents: Keys cheatsheet, global, quickshell:keys
+    // SUPER+/ registered in hyprland.lua as:
+    // bind(mainMod .. " + slash", "Agents: Keys cheatsheet", global("quickshell:keys"))
     GlobalShortcut {
         name: "keys"
         description: "Keys cheatsheet"
         onPressed: bar.toggleKeys()
     }
 
-    // SUPER+space registered in hyprland.conf next to mako's dismiss (both fire):
-    // bindd = $mainMod, space, Notifications: Dismiss board toast, global, quickshell:dismisstoast
+    // SUPER+space registered in hyprland.lua next to mako's dismiss (both fire):
+    // bind(mainMod .. " + space", "Notifications: Dismiss board toast", global("quickshell:dismisstoast"))
     GlobalShortcut {
         name: "dismisstoast"
         description: "Dismiss the agent board toast"

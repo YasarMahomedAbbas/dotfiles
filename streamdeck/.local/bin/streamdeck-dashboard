@@ -309,7 +309,7 @@ def switch_to(name):
         tmux("switch-client", "-c", c, "-t", name)
         focus_terminal()
     else:
-        sh("hyprctl", "dispatch", "workspace", "1")
+        sh("hyprctl", "dispatch", "hl.dsp.focus({ workspace = 1 })")
         spawn("ghostty", "-e", "sesh", "connect", name)
 
 
@@ -383,7 +383,7 @@ def current_accent():
 
 def focus_terminal():
     """Bring a terminal window to the front (focus any ghostty)."""
-    sh("hyprctl", "dispatch", "focuswindow", f"class:{GHOSTTY_CLASS}")
+    sh("hyprctl", "dispatch", f'hl.dsp.focus({{ window = "class:{GHOSTTY_CLASS}" }})')
 
 
 def open_work(name):
@@ -399,7 +399,7 @@ def open_work(name):
         sh("sesh", "connect", "-s", name)
         focus_terminal()
     else:
-        sh("hyprctl", "dispatch", "workspace", "1")
+        sh("hyprctl", "dispatch", "hl.dsp.focus({ workspace = 1 })")
         spawn("ghostty", "-e", "sesh", "connect", name)
 
 

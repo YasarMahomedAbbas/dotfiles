@@ -66,8 +66,8 @@ sudo pacman -S --needed \
 
 | Package | Wired up in |
 |---|---|
-| hyprland | compositor (`hypr/.config/hypr/hyprland.conf`) |
-| hyprpaper | wallpaper — set from `exec-once`, image in `hypr/.config/hypr/wallpapers/` |
+| hyprland | compositor (`hypr/.config/hypr/hyprland.lua`) |
+| hyprpaper | wallpaper — set from the `hyprland.start` autostart, image in `hypr/.config/hypr/wallpapers/` |
 | hyprlock / hypridle | Nord lock screen + idle (5m lock → 10m DPMS → 30m suspend) |
 | waybar | Nord status bar |
 | mako | Nord notifications (`SUPER+Space` dismiss) |
@@ -78,7 +78,7 @@ sudo pacman -S --needed \
 | brightnessctl / playerctl / wireplumber | media & brightness keys |
 | dolphin | file manager (`SUPER+E`) |
 
-> Edit `monitor=HDMI-A-1,...` in `hyprland.conf` to match your display (current setup is a
+> Edit the `hl.monitor({ output = "HDMI-A-1", ... })` lines in `hyprland.lua` to match your display (current setup is a
 > 3440×1440 ultrawide).
 
 ## 4. Stream Deck dashboard (optional)

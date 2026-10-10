@@ -308,7 +308,7 @@ Singleton {
     }
 
     // ── Ghostty border while something needs you ───────────────────────
-    // Hyprland 0.56: `setprop` is a dispatcher, and its gradient parser drops the
+    // Hyprland 0.56 (Lua config): `hl.dsp.window.set_prop`'s gradient parser drops the
     // first colour token, so the first colour is passed twice. There is no working
     // unset (`unset`/`-1` leave an empty gradient), so "restore" writes the current
     // general:col.{active,inactive}_border values back.
@@ -336,14 +336,16 @@ Singleton {
     readonly property string _borderScript: '
         addrs=$(hyprctl clients -j | jq -r \'.[] | select(.class == "com.mitchellh.ghostty") | .address\')
         [ -n "$addrs" ] || exit 0
-        conv() { hyprctl getoption "$1" -j | jq -r .custom |
+        conv() { hyprctl getoption "$1" -j | jq -r \'.gradient // .custom\' |
             awk \'{ o = ""; for (i = 1; i <= NF; i++) o = o " " ($i ~ /deg$/ ? $i : "0x" $i); split(o, f, " "); print f[1] o }\'; }
         if [ "$1" = 1 ]; then a="$2 $2 $3 45deg"; i="$a"
         else a=$(conv general:col.active_border); i=$(conv general:col.inactive_border); fi
         cmds=""
         for ad in $addrs; do
-            cmds="$cmds dispatch setprop address:$ad active_border_color $a;"
-            cmds="$cmds dispatch setprop address:$ad inactive_border_color $i;"
+            for p in active inactive; do
+                [ $p = active ] && v="$a" || v="$i"
+                cmds="$cmds dispatch hl.dsp.window.set_prop({ prop = \'${p}_border_color\', value = \'$v\', window = \'address:$ad\' });"
+            done
         done
         hyprctl --batch "$cmds" >/dev/null'
 

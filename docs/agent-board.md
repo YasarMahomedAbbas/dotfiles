@@ -104,7 +104,7 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
 | `board pill` | tmux status-right pill (prints nothing when all quiet) |
 | `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell roster |
-| `board jump <key>` | focus Ghostty (`hyprctl dispatch focuswindow class:com.mitchellh.ghostty`), `tmux switch-client` + select window/pane, mark seen |
+| `board jump <key>` | focus Ghostty (`hyprctl dispatch 'hl.dsp.focus({ window = "class:com.mitchellh.ghostty" })'`), `tmux switch-client` + select window/pane, mark seen |
 | `board next` | jump to the oldest `needs_you` session (SUPER+N) |
 | `board answer <key> <n>` | `tmux send-keys` option `n` to that pane (only while that session is needs_you) |
 | `board stack <key> [--yes]` | `wt-dev use <worktree> --db auto`; without `--yes` prints what it would stop |

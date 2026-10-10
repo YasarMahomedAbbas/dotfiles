@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # GNOME → Hyprland-like keybinds + Tiling Shell config.
 #
-# Idempotent. Re-run any time. Mirrors the binds in hypr/.config/hypr/hyprland.conf
+# Idempotent. Re-run any time. Mirrors the binds in hypr/.config/hypr/hyprland.lua
 # onto GNOME (mutter/shell dconf) + the Tiling Shell extension.
 #
 # Reversible: `dconf load /org/gnome/ < ~/gnome-backup-pre-tiling.ini` (full restore),

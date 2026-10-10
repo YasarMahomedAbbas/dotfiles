@@ -54,25 +54,28 @@ earlier stages done).
 | roster | c | opens the wall on that session |
 | roster | / ? esc | filter · cheatsheet · close (esc first cancels a pending `s`, then clears the filter) |
 | wall | h/j/k/l ⏎ ? esc | move · `board jump <key>` · cheatsheet · close |
-| cheatsheet | type, ↑/↓, ⏎ | filter, pick a Hyprland bind, `hyprctl dispatch <dispatcher> <arg>` |
+| cheatsheet | type, ↑/↓, ⏎ | filter, pick a Hyprland bind, `hyprctl dispatch 'BINDS["<description>"]'` |
 
 The cheatsheet reads `hyprctl binds -j` (binds with a description only), `board keys
 --json` (its "In the roster" group; the "Agent board" SUPER entries are dropped because
 the live Hyprland binds cover them, `prefix+i` joins the Agents column; a built-in
 table stands in when the CLI is missing) and `tmux list-keys -N`.
 
-## Bind descriptions (hyprland.conf)
+## Bind descriptions (hyprland.lua)
 
-Every bind is `bindd` (`bindmd`, `bindeld`, `bindld` for the flagged ones):
-`bindd = MODS, key, Group: what it does, dispatcher, args`. The description cannot
-contain a comma. The cheatsheet makes one column group per `Group`, in this order:
+Every bind goes through the config's `bind(keys, "Group: what it does", dispatcher, opts)`
+helper, which sets the bind's `description` and also stores the dispatcher in the global
+`BINDS` table under that description. Lua binds show up in `hyprctl binds -j` as
+`__lua <id>`, so the cheatsheet runs a bind with `hyprctl dispatch 'BINDS["<description>"]'`.
+The cheatsheet makes one column group per `Group`, in this order:
 Agents, In the roster, tmux, Windows, Workspaces, Apps, Shell, Notifications, Capture,
 Media, Session (anything else after, alphabetically). Runs like `Go to workspace 1` …
 `10` fold into one `1–0` line.
 
-New binds: `SUPER+G` → `global, quickshell:roster`, `SUPER+SHIFT+G` →
-`global, quickshell:wall`, `SUPER+slash` → `global, quickshell:keys`, `SUPER+N` →
-`exec, board next`, and a second `SUPER+space` bind → `global, quickshell:dismisstoast`
+New binds: `SUPER+G` → `hl.dsp.global("quickshell:roster")`, `SUPER+SHIFT+G` →
+`hl.dsp.global("quickshell:wall")`, `SUPER+slash` → `hl.dsp.global("quickshell:keys")`,
+`SUPER+N` → `exec board next`, and a second `SUPER+space` bind →
+`hl.dsp.global("quickshell:dismisstoast")`
 next to mako's (Hyprland runs every bind on the same combo, so both fire).
 
 ## Toast
@@ -88,8 +91,10 @@ While `needs_you > 0`, every `com.mitchellh.ghostty` window gets
 `active_border_color` and `inactive_border_color` = red → accent at 45deg (re-applied
 every 5 s, so new windows get it too). Two quirks of the installed Hyprland:
 
-- `setprop` is a dispatcher now (`hyprctl dispatch setprop "address:0x… active_border_color …"`);
-  `hyprctl setprop` answers "unknown request".
+- `setprop` is a dispatcher now. With the Lua config it is
+  `hyprctl dispatch "hl.dsp.window.set_prop({ prop = 'active_border_color', value = '…', window = 'address:0x…' })"`;
+  `hyprctl setprop` answers "unknown request". `hyprctl getoption -j` reports the
+  gradient as `.gradient` (the legacy config used `.custom`).
 - Its gradient parser drops the first colour token, so the first colour is passed twice.
 - There is no working unset (`unset`, `-1`, `default` all leave an empty gradient, a
   dark border), so "restore" writes the current `general:col.active_border` /

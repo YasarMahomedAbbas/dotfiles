@@ -65,6 +65,7 @@ render() { envsubst "$VARS" < "$TEMPLATES/$1" > "$OUT/$2"; }
 
 render ghostty.conf.tmpl         ghostty.conf
 render hypr-colors.conf.tmpl     hypr-colors.conf
+render hypr-colors.lua.tmpl      hypr-colors.lua
 render gtk-colors.css.tmpl       gtk-colors.css
 render mako.conf.tmpl            mako.conf
 render tmux.conf.tmpl            tmux.conf
