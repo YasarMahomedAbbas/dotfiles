@@ -31,6 +31,7 @@ Removed on `session.end`. Readers treat a file whose `heartbeat` is older than 3
   "cwd": "/home/…/worktrees/issue-1654/Frontend",
   "branch": "fix/frontend/sign-in-autofill-submit",
   "model": "Opus 5.5 (1M context)",
+  "remote": "session_01AbC…",       // Remote Control id while connected (^session_[A-Za-z0-9]{1,64}$), else null
 
   // top-level state, exactly one of:
   //   needs_you   main loop blocked on the person (permission, question, plan approval)
