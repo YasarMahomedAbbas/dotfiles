@@ -18,7 +18,9 @@ claude session ──(agent-board mod)──▶ ~/.cache/claude-board/<pane>.jso
 One file per Claude process, `~/.cache/claude-board/<key>.json`, where `<key>` is the
 tmux pane id without the `%` (`%42` → `42`) or `nopane-<session_id>` outside tmux.
 Written atomically (write `.tmp`, rename) on every change, plus a heartbeat every 10 s.
-Removed on `session.end`. Readers treat a file whose `heartbeat` is older than 30 s
+Removed on `session.end`; one Claude process can run several sessions (`/clear`,
+`/resume`), and the file comes back with the next session under its new `session_id`.
+A process with no file is invisible to every display. Readers treat a file whose `heartbeat` is older than 30 s
 **and** whose `pid` is gone as stale: shown grey, deleted after 10 min.
 
 ```jsonc

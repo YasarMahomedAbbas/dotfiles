@@ -147,6 +147,23 @@ describe('identity and file', () => {
     await w.clock.advance(30_000)
     expect(w.files.has(FILE)).toBe(false)
   })
+
+  test('a session.start after a non-clear session.end (resume) writes the file again', async ($, on) => {
+    const w = world(on)
+    await begin($, w)
+    await $.session.end({ reason: 'resume', sessionId: 'sess-1', resume: { id: 'sess-1' } } as never)
+    await w.clock.settle()
+    expect(w.files.has(FILE)).toBe(false)
+    w.runs.length = 0
+    await begin($, w)
+    expect(w.board().state).toBe('idle')
+    expect(w.runs.some(a => a.join(' ') === 'tmux set-option -t $3 @board_state idle')).toBe(true)
+    await turnStart($, w)
+    expect(w.board().state).toBe('working')
+    const before = w.board().heartbeat as number
+    await w.clock.advance(10_000)
+    expect(w.board().heartbeat).toBe(before + 10_000)
+  })
 })
 
 describe('states', () => {

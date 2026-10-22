@@ -485,7 +485,13 @@ const restore = async ($: $): Promise<void> => {
 }
 
 const start = async ($: $, cwd: string): Promise<void> => {
-  if (started) return
+  // A session.end that is not a /clear (e.g. /resume) ends this session but not the
+  // process: the next session.start must bring the board back.
+  if (started && !ended) return
+  if (ended) {
+    resetSession()
+    tmuxState = null
+  }
   const [pane, home, sessionId, model] = await Promise.all([
     $.env.get('TMUX_PANE').catch(() => undefined),
     $.env.get('HOME').catch(() => undefined),

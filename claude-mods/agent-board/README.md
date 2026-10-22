@@ -8,9 +8,12 @@ for the agent board. The contract is section 1 of [`docs/agent-board.md`](../../
 - `~/.cache/claude-board/<key>.json`, where `<key>` is the tmux pane id without `%`
   (`%42` → `42`), or `nopane-<session_id>` outside tmux. It is written atomically
   (`<key>.json.tmp`, then `mv`) on every change and every 10 s (heartbeat), and removed
-  on `session.end`. A `/clear` empties it and carries on under the new session id.
+  on `session.end`. A `/clear` empties it and carries on under the new session id. Any
+  other `session.end` that keeps the process alive (`/resume` into another session) stops
+  the heartbeat; the following `session.start` starts it again from a clean state.
 - The tmux session option `@board_state` (`needs_you` / `working` / `background` / `idle`),
-  set on each change through the session id (`$N`) and unset when the session ends.
+  set on each change through the session id (`$N`), unset when the session ends and set
+  again when a new one starts in the same process.
 - `$.store` key `durations`: the last 20 run times of each normalised Bash command per
   project (main repo root, shared across worktrees, plus the subdirectory). This is where
   `current.typical_ms` comes from (the median, once there are 3 runs).
