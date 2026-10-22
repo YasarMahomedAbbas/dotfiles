@@ -615,11 +615,13 @@ def _gradient(w, h, rgb, top=0.30, bottom=0.03):
 def _strip(d, x0, y0, w, h, cells, colors):
     if not cells:
         return
-    gap = 1
+    # Long task lists don't fit 1px cells plus gaps on a 72px key: drop the gaps, and
+    # never let a cell collapse below 1px (Pillow rejects x1 < x0).
+    gap = 1 if 2 * len(cells) - 1 <= w else 0
     cw = (w - gap * (len(cells) - 1)) / len(cells)
     for i, c in enumerate(cells):
         x = x0 + i * (cw + gap)
-        box = [round(x), y0, round(x + cw) - 1, y0 + h - 1]
+        box = [round(x), y0, max(round(x), round(x + cw) - 1), y0 + h - 1]
         if c == "a":
             d.rectangle(box, outline=colors["alert"], width=1)
         else:
