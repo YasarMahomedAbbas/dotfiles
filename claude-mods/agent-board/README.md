@@ -11,6 +11,12 @@ for the agent board. The contract is section 1 of [`docs/agent-board.md`](../../
   on `session.end`. A `/clear` empties it and carries on under the new session id. Any
   other `session.end` that keeps the process alive (`/resume` into another session) stops
   the heartbeat; the following `session.start` starts it again from a clean state.
+- `remote`: the session's Remote Control id (`session_…`) while it is connected, else
+  `null`. Claude Code sets `CLAUDE_CODE_BRIDGE_SESSION_ID` in hook and Bash subprocesses
+  while Remote Control is connected; the mod reads its own env first, else runs
+  `sh -c 'printf %s "$CLAUDE_CODE_BRIDGE_SESSION_ID"'`, once per heartbeat. A value not
+  matching `^session_[A-Za-z0-9]{1,64}$` is `null`; a failed read keeps the last value for
+  one more heartbeat, then `null`.
 - The tmux session option `@board_state` (`needs_you` / `working` / `background` / `idle`),
   set on each change through the session id (`$N`), unset when the session ends and set
   again when a new one starts in the same process.
