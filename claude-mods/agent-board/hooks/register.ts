@@ -56,6 +56,8 @@ type Call = {
 }
 
 const HEARTBEAT_MS = 10_000
+/** A Remote Control session id as Claude Code sets it (`session_…`); anything else is null. */
+const REMOTE_ID = /^session_[A-Za-z0-9]{1,64}$/
 const KEEP = 20
 const DUR_RUNS = 20
 const DUR_KEYS = 400
@@ -109,6 +111,9 @@ let dirty = false
 let tmuxState: string | null = null
 let durations: Record<string, number[]> | null = null
 let callSeq = 0
+/** The Remote Control id, read once per heartbeat; null while not connected. */
+let remote: string | null = null
+let remoteMisses = 0
 
 const resetSession = (): void => {
   S.state = 'idle'
@@ -189,6 +194,7 @@ const snapshot = (heartbeat: number): string => {
     cwd: id.cwd,
     branch: id.branch,
     model: id.model,
+    remote,
     state: S.state,
     since: S.since,
     finished_at: S.finished_at,
@@ -401,6 +407,25 @@ const findPid = async ($: $): Promise<void> => {
   }
 }
 
+/**
+ * Claude Code sets CLAUDE_CODE_BRIDGE_SESSION_ID in hook and Bash subprocesses while
+ * the session has a Remote Control connection, and removes it when that ends. Read the
+ * mod's own env first, else a child's. A failed read keeps the last value for one more
+ * heartbeat, then reports null.
+ */
+const readRemote = async ($: $): Promise<void> => {
+  let raw: string | null | undefined = await $.env.get('CLAUDE_CODE_BRIDGE_SESSION_ID').catch(() => undefined)
+  if (!raw) raw = await run($, ['sh', '-c', 'printf %s "$CLAUDE_CODE_BRIDGE_SESSION_ID"'])
+  if (raw === null) {
+    remoteMisses++
+    if (remoteMisses > 1) remote = null
+    return
+  }
+  remoteMisses = 0
+  const value = raw.trim()
+  remote = REMOTE_ID.test(value) ? value : null
+}
+
 const pollAgents = async ($: $): Promise<boolean> => {
   let list
   try {
@@ -452,6 +477,7 @@ const heartbeat = async ($: $): Promise<void> => {
   tick++
   try {
     await pollAgents($)
+    await readRemote($)
     if (tick % 3 === 0) await refreshIdentity($, false)
     if (!id.sessionId) id.sessionId = await $.session.id()
   } catch {
@@ -499,7 +525,7 @@ const start = async ($: $, cwd: string): Promise<void> => {
   id.cwd = cwd
   id.model = model ? prettyModel(model) : null
   S.since = await now($)
-  await refreshIdentity($, true)
+  await Promise.all([refreshIdentity($, true), readRemote($)])
   await restore($)
   started = true
   ended = false

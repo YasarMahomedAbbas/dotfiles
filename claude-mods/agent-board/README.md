@@ -9,6 +9,12 @@ for the agent board. The contract is section 1 of [`docs/agent-board.md`](../../
   (`%42` → `42`), or `nopane-<session_id>` outside tmux. It is written atomically
   (`<key>.json.tmp`, then `mv`) on every change and every 10 s (heartbeat), and removed
   on `session.end`. A `/clear` empties it and carries on under the new session id.
+- `remote`: the session's Remote Control id (`session_…`) while it is connected, else
+  `null`. Claude Code sets `CLAUDE_CODE_BRIDGE_SESSION_ID` in hook and Bash subprocesses
+  while Remote Control is connected; the mod reads its own env first, else runs
+  `sh -c 'printf %s "$CLAUDE_CODE_BRIDGE_SESSION_ID"'`, once per heartbeat. A value not
+  matching `^session_[A-Za-z0-9]{1,64}$` is `null`; a failed read keeps the last value for
+  one more heartbeat, then `null`.
 - The tmux session option `@board_state` (`needs_you` / `working` / `background` / `idle`),
   set on each change through the session id (`$N`) and unset when the session ends.
 - `$.store` key `durations`: the last 20 run times of each normalised Bash command per

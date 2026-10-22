@@ -10,13 +10,15 @@ type Board = Record<string, any>
 type ToolAnswer = (e: Record<string, unknown>) => unknown
 
 /** The world beneath the mod: files, host commands, the session, a clock. */
-const world = (on: On, tools: Record<string, ToolAnswer> = {}) => {
+const world = (on: On, tools: Record<string, ToolAnswer> = {}, env: Record<string, string> = {}) => {
   const files = new Map<string, string>([['/proc/4242/comm', 'claude\n']])
   const runs: string[][] = []
   const agents: AgentInfo[] = []
+  /** What a child shell sees as CLAUDE_CODE_BRIDGE_SESSION_ID; null makes the read fail. */
+  const bridge = { value: '' as string | null }
   const clock = mock.clock(on, { now: 1_000_000 })
   mock.store(on)
-  mock.env(on, { TMUX_PANE: '%42', HOME })
+  mock.env(on, { TMUX_PANE: '%42', HOME, ...env })
 
   const ok = (stdout = '') => ({
     value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
@@ -44,6 +46,11 @@ const world = (on: On, tools: Record<string, ToolAnswer> = {}) => {
     if (a[0] === 'tmux' && a[1] === 'display-message') return ok('issue-1654\t1\t$3\n')
     if (a[0] === 'git' && a.includes('branch')) return ok('fix/frontend/sign-in\n')
     if (a[0] === 'git') return ok('/w/repo/.git\nFrontend/\n')
+    if (a[0] === 'sh' && String(a[2]).includes('CLAUDE_CODE_BRIDGE_SESSION_ID')) {
+      return bridge.value === null
+        ? { value: { exitCode: 1, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+        : ok(bridge.value)
+    }
     if (a[0] === 'sh') return ok('4242\n')
     return ok()
   })
@@ -69,7 +76,7 @@ const world = (on: On, tools: Record<string, ToolAnswer> = {}) => {
     if (text === undefined) throw new Error('no state file')
     return JSON.parse(text) as Board
   }
-  return { files, runs, agents, clock, board }
+  return { files, runs, agents, bridge, clock, board }
 }
 
 const begin = async ($: Engine, w: ReturnType<typeof world>) => {
@@ -146,6 +153,66 @@ describe('identity and file', () => {
     expect(w.runs.some(a => a.join(' ') === 'tmux set-option -u -t $3 @board_state')).toBe(true)
     await w.clock.advance(30_000)
     expect(w.files.has(FILE)).toBe(false)
+  })
+})
+
+describe('remote control', () => {
+  const RC = 'session_01AbCdEfGhIjKlMn'
+
+  test('written when a child shell sees the variable, null when it is absent', async ($, on) => {
+    const w = world(on)
+    w.bridge.value = RC
+    await begin($, w)
+    expect(w.board().remote).toBe(RC)
+    expect(w.runs.some(a => a[0] === 'sh' && a[2] === 'printf %s "$CLAUDE_CODE_BRIDGE_SESSION_ID"')).toBe(true)
+
+    w.bridge.value = ''
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe(null)
+  })
+
+  test('absent at start is null, and a new id shows on the next heartbeat', async ($, on) => {
+    const w = world(on)
+    await begin($, w)
+    const b = w.board()
+    expect('remote' in b).toBe(true)
+    expect(b.remote).toBe(null)
+    w.bridge.value = RC
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe(RC)
+    w.bridge.value = 'session_02Other'
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe('session_02Other')
+  })
+
+  test('a value not shaped like a session id is null', async ($, on) => {
+    const w = world(on)
+    for (const bad of ['sess-1', 'session_', 'session_a b', `session_${'a'.repeat(65)}`, 'x; rm -rf /']) {
+      w.bridge.value = bad
+      await (w.files.has(FILE) ? w.clock.advance(10_000) : begin($, w))
+      expect(w.board().remote).toBe(null)
+    }
+  })
+
+  test("the mod's own env wins, without starting a shell", async ($, on) => {
+    const w = world(on, {}, { CLAUDE_CODE_BRIDGE_SESSION_ID: RC })
+    await begin($, w)
+    expect(w.board().remote).toBe(RC)
+    expect(w.runs.some(a => a[0] === 'sh' && String(a[2]).includes('CLAUDE_CODE_BRIDGE'))).toBe(false)
+  })
+
+  test('a failed read keeps the last value for one heartbeat, then null', async ($, on) => {
+    const w = world(on)
+    w.bridge.value = RC
+    await begin($, w)
+    w.bridge.value = null
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe(RC)
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe(null)
+    w.bridge.value = RC
+    await w.clock.advance(10_000)
+    expect(w.board().remote).toBe(RC)
   })
 })
 
