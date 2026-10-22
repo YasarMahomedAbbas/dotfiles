@@ -26,8 +26,8 @@ gui:
     defaultFgColor:
       - "#eceff4"
 git:
-  pagers:
-    - pager: delta --side-by-side --dark --paging=never
+  diffRenderers:
+    - command: delta --side-by-side --dark --paging=never
 customCommands:
   - key: "t"
     context: "worktrees"
