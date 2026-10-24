@@ -7,7 +7,7 @@ import Quickshell
 //   ● claude board · issue-1654
 //   #1654 needs you
 //   Results: The stack is live on issue-1654. Run the 8-step Edge guide…
-// Click opens the roster. SUPER+space dismisses it (quickshell:dismisstoast).
+// Click opens the wall on that session. SUPER+space dismisses it (quickshell:dismisstoast).
 PanelWindow {
     id: root
 
@@ -15,7 +15,7 @@ PanelWindow {
     property var  session: null
     property bool shown: false
 
-    signal openRoster()
+    signal openWall(string key)
 
     readonly property string mono: "JetBrainsMono Nerd Font"
 
@@ -105,7 +105,7 @@ PanelWindow {
         MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: { root.dismiss(); root.openRoster() }
+            onClicked: { root.dismiss(); root.openWall(root.session ? root.session.key : "") }
         }
     }
 }

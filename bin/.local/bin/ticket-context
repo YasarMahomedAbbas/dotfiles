@@ -8,7 +8,7 @@
 #
 #   dir root branch pipeline slug issue title problem folder
 #   stage stage_index stage_total stage_labels
-#   tasks_done tasks_total checkpoints_done checkpoints_total checkpoint
+#   tasks_done tasks_total checkpoints_done checkpoints_total checkpoint checkpoint_list
 #   dirty commits
 #
 # Two pipelines, each with its own stage table, transcribed from its orchestrator's
@@ -64,6 +64,13 @@ tree_state() {
     local base
     base="$(git -C "$dir" rev-parse --verify -q "$1" 2>/dev/null)"
     [ -n "$base" ] && emit commits "$(git -C "$dir" rev-list --count "$1..HEAD" 2>/dev/null)"
+}
+
+# `cp<TAB>done<TAB>tasks_done<TAB>tasks_total<TAB>name` lines -> checkpoint_list's one-line
+# value: records joined by \x1e, fields by \x1f (done is 1/0, the task counts blank
+# when the pipeline doesn't keep tasks per checkpoint). board splits it back.
+cp_list() {
+    awk -F '\t' 'BEGIN { ORS = "" } { printf "%s%s\037%s\037%s\037%s", (NR > 1 ? "\036" : ""), $2, $3, $4, $5 }'
 }
 
 # --- personal-assistant: pa-<n> ------------------------------------------------
@@ -170,6 +177,7 @@ pa_context() {
         emit checkpoints_total "$cp_total"
         # the one being built; with every box ticked, nothing is
         emit checkpoint "$checkpoint"
+        emit checkpoint_list "$(awk -F '\t' '$1 == "cp" { printf "cp\t%d\t\t\t%s\n", ($2 != " "), $3 }' "$cache" | cp_list)"
     fi
     tree_state origin/main
 }
@@ -304,16 +312,27 @@ if [ -n "$checklist" ]; then
     # Drop the `· commit: \`…\`` tail — it is instruction, not status.
     emit checkpoint "$(printf '%s' "$cp" | sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*·[[:space:]]*commit:.*$//')"
 
-    # Checkpoints: a `## Checkpoint` section is done once no task in it is open.
-    read -r cps_done cps_total < <(awk '
-        function flush() { if (in_cp) d += !open }
-        /^## Checkpoint/ { flush(); in_cp = 1; n++; open = 0; next }
-        /^## /           { flush(); in_cp = 0; next }
-        in_cp && /^(### \[ \]|[[:space:]]*- \[ \])/ { open = 1 }
-        END { flush(); print d + 0, n + 0 }' "$checklist")
+    # Checkpoints: a `## Checkpoint` section is done once no task in it is open. One
+    # `cp` record per checkpoint (done, its tasks ticked / in all, its name), then the
+    # totals. Tasks are counted in the same form as tasks_done above.
+    heads=0; grep -qE '^### \[[ xX]\]' "$checklist" && heads=1
+    cp_recs="$(awk -v heads="$heads" '
+        function flush() { if (in_cp) { d += !open; printf "cp\t%d\t%d\t%d\t%s\n", !open, td, tt, name } }
+        /^## Checkpoint/ {
+            flush(); in_cp = 1; n++; open = 0; td = 0; tt = 0
+            name = $0; sub(/^## Checkpoint[[:space:]]*/, "", name); sub(/[[:space:]]*·[[:space:]]*commit:.*$/, "", name)
+            next }
+        /^## / { flush(); in_cp = 0; next }
+        in_cp && heads && /^### \[[xX]\]/ { td++; tt++; next }
+        in_cp && heads && /^### \[ \]/    { tt++; open = 1; next }
+        in_cp && !heads && /^[[:space:]]*- \[[xX]\]/ { td++; tt++; next }
+        in_cp && !heads && /^[[:space:]]*- \[ \]/    { tt++; open = 1; next }
+        END { flush(); print "sum\t" d + 0 "\t" n + 0 }' "$checklist")"
+    read -r _ cps_done cps_total <<< "$(printf '%s\n' "$cp_recs" | grep '^sum')"
     if [ "${cps_total:-0}" -gt 0 ]; then
         emit checkpoints_done "$cps_done"
         emit checkpoints_total "$cps_total"
+        emit checkpoint_list "$(printf '%s\n' "$cp_recs" | grep '^cp' | cp_list)"
     fi
 fi
 

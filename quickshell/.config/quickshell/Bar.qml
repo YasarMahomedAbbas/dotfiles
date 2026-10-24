@@ -10,12 +10,12 @@ PanelWindow {
     property bool dashboardOpen: false
     property bool powerOpen:     false
     // Agent board (docs/agent-board.md)
-    property bool rosterOpen:    false
-    property bool wallOpen:      false
+    property bool wallOpen:      false    // SUPER+G
+    property bool focusOpen:     false    // SUPER+Shift+G
     property bool keysOpen:      false
-    property string wallFocusKey: ""
+    property string boardKey: ""          // session the wall / focus view opens on
 
-    readonly property bool anyPopupOpen: dashboardOpen || powerOpen || rosterOpen || wallOpen || keysOpen
+    readonly property bool anyPopupOpen: dashboardOpen || powerOpen || wallOpen || focusOpen || keysOpen
 
     // Take keyboard focus only while a popup is open, so Escape can close it
     // without the bar stealing focus the rest of the time.
@@ -32,8 +32,8 @@ PanelWindow {
     function closeAll() {
         dashboardOpen = false
         powerOpen     = false
-        rosterOpen    = false
         wallOpen      = false
+        focusOpen     = false
         keysOpen      = false
     }
 
@@ -48,17 +48,17 @@ PanelWindow {
 
     // Agent board popups: each toggles itself, closes whatever else is open,
     // and re-shows the bar if it was hidden (so the keybinds always work).
-    function toggleRoster() {
-        var was = rosterOpen
-        closeAll()
-        if (!was) visible = true
-        rosterOpen = !was
-    }
     function toggleWall(key) {
         var was = wallOpen
         closeAll()
-        if (!was) { visible = true; wallFocusKey = key || "" }
+        if (!was) { visible = true; boardKey = key || "" }
         wallOpen = !was
+    }
+    function toggleFocus(key) {
+        var was = focusOpen
+        closeAll()
+        if (!was) { visible = true; boardKey = key || "" }
+        focusOpen = !was
     }
     function toggleKeys() {
         var was = keysOpen
@@ -72,15 +72,15 @@ PanelWindow {
     readonly property int bigPopupMaxH: screenH - barH - 40
 
     // Distance from the screen's right edge to the agents island's right edge:
-    // the roster and the toast hang from there.
+    // the toast hangs from there.
     readonly property real agentsRight: agentsIsland.visible
         ? 10 + rightGroup.width - (agentsIsland.x + agentsIsland.width) : 10
 
     readonly property int activePopupH: {
         if (dashboardOpen) return dashboardPopup.implicitHeight + 12
         if (powerOpen)     return powerPopup.implicitHeight     + 12
-        if (rosterOpen)    return rosterPopup.implicitHeight    + 12
         if (wallOpen)      return wallPopup.implicitHeight      + 12
+        if (focusOpen)     return focusPopup.implicitHeight     + 12
         if (keysOpen)      return keysPopup.implicitHeight      + 12
         return 0
     }
@@ -128,13 +128,13 @@ PanelWindow {
             anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
             spacing: 8
 
-            // Agent board: needs-you / running / background counts + live stack.
+            // Agent board: a pip strip per pipeline, counts for the rest, live stack.
             // Hidden until the `board` CLI answers.
             AgentsIsland {
                 id: agentsIsland
                 visible: Board.available
-                open: root.rosterOpen
-                onToggleRoster: root.toggleRoster()
+                open: root.wallOpen || root.focusOpen
+                onToggleWall: root.toggleWall("")
             }
 
             // "⊞ /" — opens the keys cheatsheet
@@ -210,35 +210,15 @@ PanelWindow {
             onClosePopup: root.closeAll()
         }
 
-        // Roster — hangs from the agents island
-        Roster {
-            id: rosterPopup
-            anchors.right: parent.right
-            anchors.rightMargin: Math.max(10, Math.min(root.agentsRight, parent.width - width - 10))
-            anchors.top: parent.top
-            anchors.topMargin: 4
-            width: implicitWidth
-            maxHeight: root.bigPopupMaxH
-            active: root.rosterOpen
-            visible: root.rosterOpen
-            opacity: root.rosterOpen ? 1 : 0
-            y: root.rosterOpen ? 0 : -8
-            Behavior on opacity { NumberAnimation { duration: 160 } }
-            Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
-            onRequestClose: root.closeAll()
-            onOpenWall: function (key) { root.toggleWall(key) }
-            onOpenKeys: root.toggleKeys()
-        }
-
-        // Checklist wall — centred, most of the screen
-        ChecklistWall {
+        // The wall — centred, most of the screen
+        Wall {
             id: wallPopup
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.top: parent.top
             anchors.topMargin: 4
-            width: Math.min(parent.width * 0.94, 1800)
+            width: Math.min(parent.width * 0.94, 1400)
             maxHeight: root.bigPopupMaxH
-            focusKey: root.wallFocusKey
+            focusKey: root.boardKey
             active: root.wallOpen
             visible: root.wallOpen
             opacity: root.wallOpen ? 1 : 0
@@ -246,6 +226,28 @@ PanelWindow {
             Behavior on opacity { NumberAnimation { duration: 160 } }
             Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
             onRequestClose: root.closeAll()
+            onOpenFocus: function (key) { root.toggleFocus(key) }
+            onOpenKeys: root.toggleKeys()
+        }
+
+        // List + focus — centred
+        Focus {
+            id: focusPopup
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 4
+            width: Math.min(parent.width * 0.94, 1400)
+            height: implicitHeight
+            maxHeight: root.bigPopupMaxH
+            focusKey: root.boardKey
+            active: root.focusOpen
+            visible: root.focusOpen
+            opacity: root.focusOpen ? 1 : 0
+            y: root.focusOpen ? 0 : -8
+            Behavior on opacity { NumberAnimation { duration: 160 } }
+            Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
+            onRequestClose: root.closeAll()
+            onOpenWall: function (key) { root.toggleWall(key) }
             onOpenKeys: root.toggleKeys()
         }
 

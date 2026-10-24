@@ -93,7 +93,6 @@ Singleton {
         if (m < 1440) return Math.floor(m / 60) + "h"
         return Math.floor(m / 1440) + "d"
     }
-    function isPipeline(s) { return !!(s && s.ticket && (s.ticket.issue || s.ticket.slug)) }
     function sessionName(s) {
         if (s.tmux && s.tmux.session) return s.tmux.session
         var c = (s.cwd || "").split("/").filter(function (p) { return p.length })
@@ -138,116 +137,202 @@ Singleton {
         return best
     }
 
-    // ── Pipeline stages (ticket-context's stage_index is 1-based, the stage now
-    //    running; earlier stages are done) ────────────────────────────────
-    readonly property var stageLabels: ["Start ticket", "Implement plan", "Review", "Doc drift", "Verify", "Raise PR"]
-    readonly property var stageVerbs:  ["Starting", "Implementing", "Reviewing", "Doc drift", "Verifying", "Raising PR"]
-    readonly property var stageCellCount: [3, 0, 2, 1, 3, 2]   // 0 = tasks_total
+    // ── Pipelines (docs/agent-board.md §2: `ticket.stages`, `stage_index`) ──
+    // A pipeline is a session on a stage table: travel-smart's frontend pipeline
+    // (Start …) or personal-assistant's (Refine …). Every view draws the same six
+    // stages from the same fields, so the wall, the focus pane and the bar's pips
+    // never disagree with the tmux strip.
+    readonly property var defaultStages: ["Start", "Implement", "Review", "Docs", "Verify", "PR"]
 
-    function stageLabel(s) {
-        var i = s.ticket ? s.ticket.stage_index : 0
-        return i >= 1 && i <= stageLabels.length ? stageLabels[i - 1] : (s.ticket && s.ticket.stage) || ""
+    function isPipeline(s) { return !!(s && s.ticket && s.ticket.stage_index) }
+    function stages(s) {
+        var l = s && s.ticket && s.ticket.stages
+        return l && l.length === 6 ? l : defaultStages
     }
-    function stateCode(s) {
-        var st = status(s)
-        return st === "needs_you" ? "a" : st === "slow" ? "s"
-             : st === "working" ? "r" : st === "background" ? "b" : ""
+    // elapsed, short: 12s · 5m · 2h04m (times are elapsed only)
+    function el(ms) {
+        var s = Math.max(0, Math.floor(ms / 1000))
+        if (s < 60) return s + "s"
+        if (s < 3600) return Math.floor(s / 60) + "m"
+        var m = Math.floor(s % 3600 / 60)
+        return Math.floor(s / 3600) + "h" + (m < 10 ? "0" : "") + m + "m"
     }
-    // One cell per stage, for the roster's stage strip
-    function stageCells(s) {
-        var t = s.ticket; if (!t) return []
-        var n = t.stage_total || 6, idx = t.stage_index || 0, out = []
-        for (var i = 1; i <= n; i++) out.push(i < idx ? "d" : i === idx ? stateCode(s) : "")
-        return out
-    }
-    function _rep(c, n) { var a = []; for (var i = 0; i < n; i++) a.push(c); return a }
-    function _activity(s) {
-        var c = s.current
-        if (c && c.started) {
-            var t = (c.detail || c.tool || "") + " " + fmt(now - c.started)
-            return slow(s) ? t + " slow" : t
-        }
-        var n = runningAgents(s)
-        if (n) return n + (n === 1 ? " agent" : " agents")
+    // Implement's count: the checklist's tasks (travel-smart), else the issue's
+    // checkpoints (personal-assistant); "" when neither is known.
+    function implCount(t) {
+        if (!t) return ""
+        if (t.tasks_total) return (t.tasks_done || 0) + "/" + t.tasks_total
+        if (t.checkpoints_total) return (t.checkpoints_done || 0) + "/" + t.checkpoints_total
         return ""
     }
-
-    // The checklist card for one session:
-    //   { kind, chip, title, time, total, rows: [{ g, label, cells, st, stColor }] }
-    // A pipeline session gets its six stages (Implement split into its tasks);
-    // anything else gets Claude's own task list.
-    function card(s) {
-        var st = status(s), code = stateCode(s)
-        var kind = st === "needs_you" ? "attn" : (st === "working" || st === "slow") ? "run"
-                 : st === "background" ? "bg" : st === "done" ? "done" : "idle"
-        var rows = [], total = "", chip = ""
-        var stColor = st === "needs_you" ? Colors.attn : st === "slow" ? Colors.yellow
-                    : st === "background" ? Colors.blue : Colors.fg0
-        var waiting = st === "needs_you" ? "Waiting on you" : _activity(s)
-
-        if (isPipeline(s)) {
-            var t = s.ticket, idx = t.stage_index || 0
-            var td = t.tasks_done || 0, tt = t.tasks_total || 0
-            for (var i = 1; i <= stageLabels.length; i++) {
-                var n = stageCellCount[i - 1] || Math.max(tt, 3)
-                var r = { g: "", label: stageLabels[i - 1], cells: _rep("", n), st: "", stColor: Colors.fg2 }
-                if (i < idx) {
-                    r.g = "d"; r.cells = _rep("d", n)
-                    r.st = (i === 2 && tt) ? tt + " of " + tt : "Done"
-                } else if (i === idx) {
-                    r.g = code; r.st = waiting; r.stColor = stColor
-                    if (i === 2 && tt) {
-                        r.cells = _rep("d", Math.min(td, n)).concat(td < n ? [code] : [])
-                        r.cells = r.cells.concat(_rep("", n - r.cells.length))
-                        if (!waiting) r.st = td + " of " + tt
-                    } else if (code === "a") {
-                        r.cells = _rep("a", n)
-                    } else if (code && s.current && s.current.typical_ms) {
-                        var k = Math.max(1, Math.round(Math.min(1, (now - s.current.started) / s.current.typical_ms) * n))
-                        r.cells = _rep(code, k).concat(_rep("", n - k))
-                    } else if (code) {
-                        r.cells = [code].concat(_rep("", n - 1))
-                    }
-                }
-                rows.push(r)
-            }
-            total = (idx === 2 && tt) ? td + " of " + tt + " tasks" : "stage " + idx + " of " + (t.stage_total || 6)
-            chip = st === "needs_you" ? "● Needs you" : st === "slow" ? "▶ Slow"
-                 : st === "working" ? "▶ " + (stageVerbs[idx - 1] || "Working")
-                 : st === "background" ? "◐ Background" : st === "done" ? "✓ Done" : st === "stale" ? "stale" : "· Idle"
-        } else {
-            var tasks = s.tasks || [], done = 0
-            for (var j = 0; j < tasks.length && j < 10; j++) {
-                var ts = tasks[j].status
-                if (ts === "completed") done++
-                var c = ts === "completed" ? "d" : ts === "in_progress" ? (code || "r") : ""
-                rows.push({ g: c, label: tasks[j].subject || "", stColor: c === "d" ? Colors.fg2 : stColor,
-                            cells: c === "d" ? _rep("d", 4) : c ? [c, "", "", ""] : _rep("", 4),
-                            st: c === "d" ? "Done" : c ? (waiting || "Running") : "" })
-            }
-            if (!tasks.length) {
-                var ag = (s.agents || []).filter(function (a) { return a.status === "running" })
-                for (var q = 0; q < ag.length && q < 4; q++)
-                    rows.push({ g: "b", label: ag[q].type || "Agent", cells: ["b", "", "", ""], stColor: Colors.blue,
-                                st: (ag[q].description || "") + " " + fmt(now - (ag[q].started || now)) })
-                if (!rows.length)
-                    rows.push({ g: code, label: s.current ? s.current.tool : (st === "needs_you" ? "Question" : "Nothing running"),
-                                cells: code ? [code, "", "", ""] : _rep("", 4), st: waiting, stColor: stColor })
-            }
-            total = tasks.length ? done + " of " + tasks.length + " steps" : (st === "idle" || st === "done" ? "idle" : "")
-            chip = st === "needs_you" ? "● Needs you" : st === "slow" ? "▶ Slow" : st === "working" ? "▶ Working"
-                 : st === "background" ? "◐ Background" : st === "done" ? (tasks.length && done === tasks.length ? "✓ All done" : "✓ Done")
-                 : st === "stale" ? "stale" : "· Idle"
+    // One of: attn now bg done idle stale (slow working is "now", drawn yellow)
+    function kind(s) {
+        var st = status(s)
+        return st === "needs_you" ? "attn" : (st === "working" || st === "slow") ? "now"
+             : st === "background" ? "bg" : st === "done" ? "done" : st === "stale" ? "stale" : "idle"
+    }
+    function kindColor(s) { return statusColor(status(s)) }
+    function stageLabel(s) {
+        var i = s.ticket ? s.ticket.stage_index : 0
+        return i >= 1 && i <= 6 ? stages(s)[i - 1] : (s.ticket && s.ticket.stage) || ""
+    }
+    // the short word under a strip: `verify`, `impl 3/5`, `needs you`
+    function stageWord(s) {
+        if (status(s) === "needs_you") return "needs you"
+        var t = s.ticket || {}
+        if (t.stage_index === 2) { var n = implCount(t); return "impl" + (n ? " " + n : "") }
+        return stageLabel(s).toLowerCase()
+    }
+    // Six stage classes: done, then the current one by state (attn now bg, or
+    // `todo` while idle on it), then todo.
+    function stageClasses(s) {
+        var idx = (s.ticket && s.ticket.stage_index) || 0, k = kind(s), out = []
+        var cur = k === "attn" || k === "now" || k === "bg" ? k : "todo"
+        for (var i = 1; i <= 6; i++) out.push(i < idx ? "done" : i === idx ? cur : "todo")
+        return out
+    }
+    // The stepper's nodes: {label, cls, mark, sub}. `compact` puts Implement's
+    // count in its label (Impl 3/5); otherwise it goes under it, and the current
+    // stage carries its elapsed time.
+    function steps(s, compact) {
+        var cls = stageClasses(s), l = stages(s), t = s.ticket || {}, idx = t.stage_index || 0
+        var n = implCount(t), out = []
+        for (var i = 0; i < 6; i++) {
+            var label = l[i], sub = ""
+            if (i === 1 && n) { if (compact) label = "Impl " + n; else sub = n }
+            if (!compact && i === idx - 1 && i !== 1) sub = el(now - (s.since || now))
+            out.push({ label: label, cls: cls[i], mark: cls[i] === "done" ? "✓" : cls[i] === "attn" ? "!" : "", sub: sub })
         }
-
-        var time = ""
-        if (st === "needs_you") time = fmt(now - ((s.attention && s.attention.since) || s.since))
-        else if (st === "working" || st === "slow" || st === "background") time = fmt(now - s.since)
-        else if (s.finished_at) time = "done " + Qt.formatTime(new Date(s.finished_at), "HH:mm")
-
-        var title = isPipeline(s) ? "#" + s.ticket.issue + " " + (s.ticket.title || "") : sessionName(s)
-        return { kind: kind, chip: chip, title: title, time: time, total: total, rows: rows,
-                 all: rows.reduce(function (a, r) { return a.concat(r.cells) }, []) }
+        return out
+    }
+    function title(s) {
+        if (isPipeline(s) || (s.ticket && s.ticket.issue)) return (s.ticket.title || s.ticket.problem || sessionName(s))
+        return sessionName(s) + (s.branch ? " · " + s.branch : "")
+    }
+    function issueText(s) { return s.ticket && s.ticket.issue ? "#" + s.ticket.issue : "" }
+    function problem(s) {
+        var t = s.ticket
+        if (t && t.problem && t.problem !== t.title) return t.problem
+        return ""
+    }
+    // time on the card's header: in this state for so long, or since it finished
+    function timeText(s) {
+        var k = kind(s)
+        if (k === "attn") return el(now - ((s.attention && s.attention.since) || s.since || now))
+        if (k === "done") return el(now - (s.finished_at || s.since || now)) + " ago"
+        if (k === "idle" || k === "stale") return "idle " + el(now - (s.finished_at || s.since || now))
+        return el(now - (s.since || now))
+    }
+    function runningList(s) {
+        var out = []
+        ;(s.agents || []).forEach(function (a) {
+            if (a.status === "running" || a.status === "needs_you")
+                out.push({ g: "◆", gc: a.status === "needs_you" ? Colors.attn : Colors.blue,
+                           t: (a.type || "agent") + " · " + (a.description || ""), r: el(now - (a.started || now)) })
+        })
+        ;(s.shells || []).forEach(function (x) {
+            if (x.status === "running")
+                out.push({ g: "$", gc: Colors.blue, t: x.command || "", r: el(now - (x.started || now)) })
+        })
+        return out
+    }
+    function claudeTasks(s) {
+        var ts = s.tasks || [], d = 0
+        for (var i = 0; i < ts.length; i++) if (ts[i].status === "completed") d++
+        return { done: d, total: ts.length, current: ts.filter(function (x) { return x.status === "in_progress" })[0] || null }
+    }
+    // The checkpoint being built: {k, n, name, tasks_done, tasks_total} or null
+    function curCheckpoint(s) {
+        var t = s.ticket || {}, cps = t.checkpoints || []
+        for (var i = 0; i < cps.length; i++)
+            if (!cps[i].done) return { k: i + 1, n: cps.length, name: cps[i].name, tasks_done: cps[i].tasks_done, tasks_total: cps[i].tasks_total }
+        return null
+    }
+    function _cpName(n) { return String(n || "").replace(/^\S+\s+—\s+/, "") }
+    // "Implement · checkpoint 3 of 5 · the bridge carries the link"
+    function nowHead(s) {
+        var k = kind(s), a = s.attention || {}
+        var what = k === "attn" ? (a.kind === "plan" ? "a plan to approve"
+                                 : a.kind === "permission" ? "permission · " + (a.title || "a tool")
+                                 : "asking · " + (a.title || "a question"))
+                 : ""
+        if (isPipeline(s)) {
+            var stage = stageLabel(s)
+            if (!what && s.ticket.stage_index === 2) {
+                var cp = curCheckpoint(s)
+                if (cp) what = "checkpoint " + cp.k + " of " + cp.n + " · " + _cpName(cp.name)
+                else if (s.ticket.checkpoints_total) what = "every checkpoint done · closing out"
+            }
+            if (!what && k === "now" && s.current) what = s.current.tool || "working"
+            // the lines under it name what runs; the head only says how much
+            if (!what && k === "bg") { var r = runningList(s); what = r.length ? r.length + " running in the background" : "in the background" }
+            if (!what) what = k === "done" ? "finished · not looked at yet" : k === "idle" ? "idle" : ""
+            return stage + (what ? " · " + what : "")
+        }
+        if (what) return "Needs you · " + what
+        return k === "now" ? "Working" + (s.current ? " · " + (s.current.tool || "") : "")
+             : k === "bg" ? "In the background" : k === "done" ? "Finished · not looked at yet"
+             : k === "stale" ? "Gone quiet" : "Idle"
+    }
+    // The now band's lines: the question, what runs, or what finished
+    function nowLines(s) {
+        var k = kind(s), out = []
+        if (k === "attn") {
+            var a = s.attention || {}
+            out.push({ g: "?", gc: Colors.attn, t: a.text || a.title || "", r: "" })
+            return out
+        }
+        var c = s.current
+        if (k === "now" && c)
+            out.push({ g: "▶", gc: slow(s) ? Colors.yellow : Colors.fg0,
+                       t: (c.tool || "") + (c.detail ? " " + c.detail : ""), r: el(now - (c.started || now)) })
+        out = out.concat(runningList(s))
+        var ct = claudeTasks(s)
+        if (ct.total && out.length < 3)
+            out.push({ g: "✓", gc: Colors.green, t: "tasks " + ct.done + " of " + ct.total + " ticked"
+                       + (ct.current ? " · " + ct.current.subject : ""), r: "" })
+        if (k === "done" && !out.length) out.push({ g: "✓", gc: Colors.green, t: "turn ended · ⏎ to read the reply", r: "" })
+        return out.slice(0, 3)
+    }
+    // the task bar: travel-smart's tasks while implementing, else Claude's own
+    function taskBar(s) {
+        var t = s.ticket || {}
+        if (isPipeline(s) && t.stage_index === 2 && t.tasks_total)
+            return { f: (t.tasks_done || 0) / t.tasks_total, text: (t.tasks_done || 0) + "/" + t.tasks_total + " tasks" }
+        var ct = claudeTasks(s)
+        if (ct.total) return { f: ct.done / ct.total, text: ct.done + "/" + ct.total + " tasks" }
+        return null
+    }
+    function chip(s) {
+        var st = status(s)
+        return st === "needs_you" ? "● NEEDS YOU" : st === "slow" ? "▶ SLOW" : st === "working" ? "▶ WORKING"
+             : st === "background" ? "◐ BACKGROUND" : st === "done" ? "✓ DONE" : st === "stale" ? "○ STALE" : "○ IDLE"
+    }
+    // A plain session (no ticket) gets a card only while there is something to
+    // act on: it needs you, or it finished and nobody looked. Otherwise it is a
+    // one-liner under the cards.
+    function wantsCard(s) {
+        if (isPipeline(s)) return true
+        var st = status(s)
+        return st === "needs_you" || st === "done"
+    }
+    function glyph(s) {
+        var st = status(s)
+        return st === "needs_you" ? "●" : (st === "working" || st === "slow") ? "▶" : st === "background" ? "◐"
+             : st === "done" ? "✓" : "○"
+    }
+    // what a one-liner says after its name: `Bash · 3s`, `idle 4m`
+    function oneLiner(s) {
+        var k = kind(s), c = s.current
+        if (k === "now" && c) return (c.tool || "working") + " · " + el(now - (c.started || now))
+        if (k === "bg") { var r = runningList(s); return (r.length ? r.length + " running · " : "") + el(now - (s.since || now)) }
+        if (k === "attn") return "needs you · " + ((s.attention && s.attention.title) || "")
+        return timeText(s)
+    }
+    function matches(s, f) {
+        if (!f) return true
+        var hay = [sessionName(s), s.branch || "", issueText(s), title(s), problem(s)].join(" ")
+        return hay.toLowerCase().indexOf(f.toLowerCase()) !== -1
     }
 
     // ── Actions ─────────────────────────────────────────────────────────

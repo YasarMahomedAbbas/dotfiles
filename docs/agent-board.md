@@ -9,8 +9,8 @@ claude session ──(agent-board mod)──▶ ~/.cache/claude-board/<pane>.jso
                                               │
                          `board` CLI (reads, enriches, acts)
           ┌──────────────┬──────────────┬─────┴────────┬───────────────┐
-   quickshell island  roster popup   sesh picker   tmux pill    streamdeck
-   + roster + wall    (prefix+i)     + preview     (#(board pill))
+   quickshell island  roster popup   sesh picker   tmux lines   streamdeck
+   + wall + focus     (prefix+i)     + preview     (#(board …))
 ```
 
 ## 1. State file (written by the mod)
@@ -103,19 +103,19 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 
 | command | does |
 |---|---|
-| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
+| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,checkpoints,slug}; `checkpoints` = [{name,done,tasks_done,tasks_total}] in plan order, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
 | `board pill [#{status}]` | tmux status-right counts pill (prints nothing when all quiet); given `#{status}`, sets `status` to 2 while any session is open and back to `on` when none is |
 | `board here <session> <width>` | tmux status-left: this session's issue, title, stage and activity; `ticket-pill`'s pill when no Claude runs there |
 | `board pipelines <session> <width>` | tmux status line 2: a pill per pipeline, then the other sessions as counts |
-| `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell roster |
+| `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell wall |
 | `board jump <key>` | focus Ghostty (`hyprctl dispatch 'hl.dsp.focus({ window = "class:com.mitchellh.ghostty" })'`), `tmux switch-client` + select window/pane, mark seen |
 | `board next` | jump to the oldest `needs_you` session (SUPER+N) |
 | `board answer <key> <n>` | `tmux send-keys` option `n` to that pane (only while that session is needs_you) |
 | `board stack <key> [--yes]` | `wt-dev use <worktree> --db auto`; without `--yes` prints what it would stop |
 | `board design <key> [--copy]` | `xdg-open` the newest design url (or `wl-copy` it) |
 | `board seen <key>` | marks finished work as seen (tmux `pane-focus-in` hook calls this) |
-| `board keys [--json]` | the board's own key table (roster keys) for the cheatsheet |
+| `board keys [--json]` | the board's own key table (the wall's keys) for the cheatsheet |
 
 Unseen: `finished_at` newer than `~/.cache/claude-board/seen/<key>` (touched by `board seen`).
 
@@ -123,12 +123,14 @@ Unseen: `finished_at` newer than `~/.cache/claude-board/seen/<key>` (touched by 
 
 | keys | does |
 |---|---|
-| SUPER+G | roster (quickshell) |
+| SUPER+G | the wall (quickshell): a card per pipeline |
 | SUPER+N | `board next` |
-| SUPER+Shift+G | checklist wall (quickshell) |
+| SUPER+Shift+G | list + focus (quickshell) |
 | SUPER+/ | keys cheatsheet (quickshell; Hyprland binds via `hyprctl binds -j` descriptions from `bindd`, tmux via `tmux list-keys -N`, board via `board keys --json`) |
 | prefix+i | `board roster` in a tmux popup |
-| in roster | j/k move · ⏎ jump · 1-9 answer · s s stack · v design · y copy link · o localhost · t ticket · c checklist · / filter · ? keys · esc |
+| on the wall | h/j/k/l move · ⏎ jump · 1-9 answer · f focus view · s s stack · v design · y copy link · o localhost · t ticket · / filter · ? keys · esc |
+| in the focus view | j/k next session · f back to the wall · the rest as on the wall |
+| in the tmux roster | j/k move · c checklist · the rest as on the wall |
 
 ## 4. Colours (status semantics, all themes)
 
