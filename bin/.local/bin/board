@@ -54,7 +54,7 @@ state files exactly as the mod wrote them, each with these fields added:
    "stacks": {"<project>": {"state": "live|starting|failed|stopped",
                             "tree": "<worktree name>|null", "branch": "...|null"}}}
 
-Caches live in $BOARD_DIR/cache/: ticket-context per cwd (30 s), `wt-dev status
+Caches live in $BOARD_DIR/cache/: ticket-context per cwd (30 s, `ctx<schema>-*`), `wt-dev status
 --short` (5 s), the roster's mode. Python 3 stdlib only.
 """
 
@@ -75,6 +75,10 @@ SEEN = BOARD_DIR / "seen"
 STALE_MS = 30_000
 REAP_MS = 10 * 60_000
 TICKET_TTL = 30
+# Bumped whenever ticket-context's keys change: the per-cwd cache is shared by every
+# board on the machine, and an older board (or ticket-context) must not serve a newer
+# one its output for the 30 s it is fresh.
+CTX_SCHEMA = 2
 STACK_TTL = 5
 STATES = ("needs_you", "working", "background", "idle")
 GHOSTTY_CLASS = "com.mitchellh.ghostty"
@@ -315,7 +319,7 @@ def worktree_ctx(cwd):
                 ctx["project"] = wt_project(ctx["main"])
         ctx["remote"] = (run(["git", "-C", cwd, "remote", "get-url", "origin"]) or "").strip() or None
         return ctx
-    return cached("ctx-" + hashlib.sha1((cwd or "").encode()).hexdigest()[:16] + ".json", TICKET_TTL, produce)
+    return cached(f"ctx{CTX_SCHEMA}-" + hashlib.sha1((cwd or "").encode()).hexdigest()[:16] + ".json", TICKET_TTL, produce)
 
 
 def _int(v):
