@@ -130,7 +130,8 @@ Unseen: `finished_at` newer than `~/.cache/claude-board/seen/<key>` (touched by 
 
 ## 4. Colours (status semantics, all themes)
 
-Read from `~/.config/theme/quickshell-colors.json` / `sesh-colors.sh`: needs_you = `red`,
+Read from `~/.config/theme/quickshell-colors.json` / `sesh-colors.sh`: needs_you = `attn`
+(rust `#e0703a` in every palette, `SESH_ATTN_COLOR`; it used to be `red`),
 working = `fg0` (frost), background = `blue` (steel `#8fa8c8` in ember), done/idle
 finished = `green`, slow (past typical) = `yellow`, design = `accent`.
 
@@ -142,7 +143,7 @@ the agent sidebar are gone).
 
 | surface | source | shows |
 |---|---|---|
-| tmux status-right | `#(board pill)` in `themes/templates/tmux.conf.tmpl` | `● 2 needs you` (red pill), `▶ 1 ◐ 3` (fg0 / blue; ▶ yellow when a turn runs past typical). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
+| tmux status-right | `#(board pill)` in `themes/templates/tmux.conf.tmpl` | `● 2 needs you` (rust pill), `▶ 1 ◐ 3` (fg0 / blue; ▶ yellow when a turn runs past typical). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
 | `prefix+i` | `board roster` in a `display-popup -E -w 90% -h 80%` | fzf roster: glyph, ticket, problem, what it is doing, stack chip; preview = question + options, stage strip, checklist summary, agents with elapsed, design link. Opens with input hidden so letters are keys; `/` shows the filter, `esc` leaves it (or closes). Reloads every 3 s |
 | `pane-focus-in` hook | `board seen #{pane_id}` | focusing a pane clears its `✓ unseen`; `board list` also treats a pane some client is looking at as seen |
 | sesh picker (`prefix+s`) | `sesh-list-bells` (one `board list --json` per render) | status column `● needs you · <title>` / `▶ <detail> <elapsed>[ slow]` / `◐ background · N agents` / `✓ unseen` / nothing when idle |

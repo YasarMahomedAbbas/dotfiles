@@ -14,7 +14,7 @@ import Quickshell.Io
 // good data in place (or nothing, with `available` false).
 //
 // Also owns the Hyprland side effect of "something needs you": while any
-// session is needs_you, every Ghostty window's border is set to red → accent.
+// session is needs_you, every Ghostty window's border is set to attn (rust) → accent.
 Singleton {
     id: root
 
@@ -120,7 +120,7 @@ Singleton {
     }
     function statusColor(st) {
         switch (st) {
-        case "needs_you":  return Colors.red
+        case "needs_you":  return Colors.attn
         case "working":    return Colors.fg0
         case "slow":       return Colors.yellow
         case "background": return Colors.blue
@@ -181,7 +181,7 @@ Singleton {
         var kind = st === "needs_you" ? "attn" : (st === "working" || st === "slow") ? "run"
                  : st === "background" ? "bg" : st === "done" ? "done" : "idle"
         var rows = [], total = "", chip = ""
-        var stColor = st === "needs_you" ? Colors.red : st === "slow" ? Colors.yellow
+        var stColor = st === "needs_you" ? Colors.attn : st === "slow" ? Colors.yellow
                     : st === "background" ? Colors.blue : Colors.fg0
         var waiting = st === "needs_you" ? "Waiting on you" : _activity(s)
 
@@ -313,7 +313,7 @@ Singleton {
     // unset (`unset`/`-1` leave an empty gradient), so "restore" writes the current
     // general:col.{active,inactive}_border values back.
     // Starts "on" so the first poll restores borders a previous instance (before
-    // a reload or restart) may have left red. QS_BOARD_NO_BORDER=1 turns it off
+    // a reload or restart) may have left rust. QS_BOARD_NO_BORDER=1 turns it off
     // (fixture testing).
     property bool _borderOn: true
     readonly property bool _borderEnabled: !Quickshell.env("QS_BOARD_NO_BORDER")
@@ -324,7 +324,7 @@ Singleton {
         if (!_borderEnabled || !_seeded) return
         if (!_wantBorder && !_borderOn) return
         borderProc.command = ["bash", "-c", root._borderScript, "border",
-            _wantBorder ? "1" : "0", _hex(Colors.red), _hex(Colors.accent)]
+            _wantBorder ? "1" : "0", _hex(Colors.attn), _hex(Colors.accent)]
         borderProc.running = true
         _borderOn = _wantBorder
     }

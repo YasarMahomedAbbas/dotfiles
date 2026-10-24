@@ -14,7 +14,7 @@ Rectangle {
 
     readonly property string mono: "JetBrainsMono Nerd Font"
     readonly property var m: Board.card(session)
-    readonly property color kc: m.kind === "attn" ? Colors.red
+    readonly property color kc: m.kind === "attn" ? Colors.attn
                               : m.kind === "run"  ? Colors.fg0
                               : m.kind === "bg"   ? Colors.blue
                               : m.kind === "done" ? Colors.green
@@ -25,7 +25,7 @@ Rectangle {
     color: selected ? Qt.rgba(1, 1, 1, 0.06) : Qt.rgba(0, 0, 0, 0.28)
     border.width: selected ? 2 : 1
     border.color: selected ? Colors.accent
-                : m.kind === "attn" ? Colors.alpha(Colors.red, 0.6)
+                : m.kind === "attn" ? Colors.alpha(Colors.attn, 0.6)
                 : m.kind === "run"  ? Colors.alpha(Colors.fg0, 0.25)
                 : m.kind === "done" ? Colors.alpha(Colors.green, 0.45)
                 : m.kind === "bg"   ? Colors.alpha(Colors.blue, 0.4)
@@ -41,7 +41,7 @@ Rectangle {
         return g === "d" ? "✓" : g === "a" ? "●" : g === "b" ? "◐" : (g === "r" || g === "s") ? "▶" : "○"
     }
     function glyphColor(g) {
-        return g === "d" ? Colors.green : g === "a" ? Colors.red : g === "s" ? Colors.yellow : g === "b" ? Colors.blue
+        return g === "d" ? Colors.green : g === "a" ? Colors.attn : g === "s" ? Colors.yellow : g === "b" ? Colors.blue
              : g === "r" ? Colors.fg0 : Colors.fg2
     }
 

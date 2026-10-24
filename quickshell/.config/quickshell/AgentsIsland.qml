@@ -4,7 +4,7 @@ import QtQuick.Layouts
 // The agents island (docs/agent-board.md): what needs you, what's running,
 // what's in the background, a fresh design, and which worktree's stack is live.
 //   ● 1 needs you   ▶ 3   ◐ 1   ◇ design   ts ● 1654
-// Glows red while anything needs you. Click opens the roster (SUPER+G).
+// Glows rust while anything needs you. Click opens the roster (SUPER+G).
 Island {
     id: root
 
@@ -13,9 +13,9 @@ Island {
 
     hpad: 13
     glow: Board.needsYou > 0
-    glowColor: Colors.red
+    glowColor: Colors.attn
 
-    // red rim while something needs you, accent rim while the roster is open
+    // rust rim while something needs you, accent rim while the roster is open
     Rectangle {
         parent: root
         anchors.centerIn: parent
@@ -24,7 +24,7 @@ Island {
         radius: root.radius
         color: "transparent"
         border.width: 1
-        border.color: Board.needsYou > 0 ? Colors.alpha(Colors.red, 0.85)
+        border.color: Board.needsYou > 0 ? Colors.alpha(Colors.attn, 0.85)
                     : root.open          ? Colors.alpha(Colors.accent, 0.5)
                     :                      "transparent"
         z: 2
@@ -38,7 +38,7 @@ Island {
         Text {
             visible: Board.needsYou > 0
             text: "● " + Board.needsYou + " needs you"
-            color: Colors.red
+            color: Colors.attn
             font.family: "JetBrainsMono Nerd Font"
             font.pixelSize: 12
             font.weight: Font.Bold

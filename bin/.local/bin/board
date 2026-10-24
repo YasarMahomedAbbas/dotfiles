@@ -167,6 +167,9 @@ def theme():
     fz = lambda k, d: fzf.get(k, d).lstrip("#")  # noqa: E731
     return {
         "red": vals.get("SESH_BELL_COLOR", "bf616a"),
+        # needs you is rust (attn) in every theme; before the next theme-switch the
+        # file has no SESH_ATTN_COLOR, so the rust is the fallback, never red.
+        "attn": vals.get("SESH_ATTN_COLOR", "e0703a"),
         "yellow": vals.get("SESH_BUSY_COLOR", "ebcb8b"),
         "green": vals.get("SESH_OK_COLOR", "a3be8c"),
         "dim": vals.get("SESH_DIM_COLOR", "6c7a96"),
@@ -492,7 +495,7 @@ def status_role(e):
         return "dim", "stale"
     st = e["state"]
     if st == "needs_you":
-        return "red", st
+        return "attn", st
     if st == "working":
         return ("yellow" if is_slow(e) else "fg0"), st
     if st == "background":
@@ -568,7 +571,7 @@ def cmd_summary(args):
 
 
 def cmd_pill(_args):
-    """`● N needs you` on red, then `▶ N ◐ N` in a grey pill; nothing when all quiet.
+    """`● N needs you` on rust, then `▶ N ◐ N` in a grey pill; nothing when all quiet.
     Printed whole (caps included) for the same reason as `wt-dev tmux`: an empty pill
     still renders as a blob and tmux cannot branch on a #()'s output."""
     entries = [e for e in load(enrich=False) if not e.get("stale")]
@@ -579,8 +582,8 @@ def cmd_pill(_args):
     o, c = "", ""
     out = ""
     if need:
-        out += (f"#[fg=#{t['red']},bg=default]{o}#[bg=#{t['red']},fg=#{t['bg0']},bold] ● {need} needs you "
-                f"#[fg=#{t['red']},bg=default,nobold]{c}#[bg=default] ")
+        out += (f"#[fg=#{t['attn']},bg=default]{o}#[bg=#{t['attn']},fg=#{t['bg0']},bold] ● {need} needs you "
+                f"#[fg=#{t['attn']},bg=default,nobold]{c}#[bg=default] ")
     if work or bg:
         inner = ""
         if work:
@@ -855,10 +858,10 @@ def preview(key):
     # ── the question
     if e["state"] == "needs_you":
         a = e.get("attention") or {}
-        out.append(paint("red", f"  {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
+        out.append(paint("attn", f"  {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
         out += [paint("text", ln) for ln in wrap(a.get("text") or "", width)]
         for o in a.get("options") or []:
-            out.append(f"    {paint('red', o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+            out.append(f"    {paint("attn", o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
         out.append("")
     elif e["state"] == "working" and e.get("current"):
         cur = e["current"]
@@ -902,7 +905,7 @@ def preview(key):
         out.append("  " + paint("dim", "agents"))
         for a in ags[:8]:
             st = a.get("status")
-            r = {"running": "blue", "needs_you": "red"}.get(st, "dim")
+            r = {"running": "blue", "needs_you": "attn"}.get(st, "dim")
             g = {"running": "◐", "needs_you": "●"}.get(st, "✓")
             end = a.get("ended") or now
             el = elapsed(end - (a.get("started") or end))

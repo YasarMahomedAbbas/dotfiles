@@ -96,7 +96,7 @@ VPS_HOSTS = [
 
 # Fallback palette (Nord-ish); live values pulled from the active theme below.
 COLORS = {
-    "alert":  (191, 97, 106),   # red   — needs you
+    "alert":  (224, 112, 58),   # attn (rust) — needs you
     "busy":   (236, 239, 244),  # fg0 (frost) — working
     "slow":   (235, 203, 139),  # yellow — working past its typical time
     "background": (129, 161, 193),  # blue — turn ended, agents/shells still run
@@ -170,7 +170,7 @@ def load_theme():
         return
     fzf = dict(p.split(":", 1) for p in vals.get("SESH_FZF_COLORS", "").split(",") if ":" in p)
     roles = {
-        "alert": vals.get("SESH_BELL_COLOR"),
+        "alert": vals.get("SESH_ATTN_COLOR"),
         "slow": vals.get("SESH_BUSY_COLOR"),
         "done": vals.get("SESH_OK_COLOR"),
         "design": vals.get("SESH_ACCENT_COLOR"),
@@ -725,7 +725,7 @@ def render_blank(deck):
 def render_work(deck, label, logo_file, glyph, accent, live, status, attached):
     """A work-page project key: its logo (or a glyph in the theme accent) above
     the project name. The border shows session state — cyan when it's the client's
-    attached session, else red/amber for Claude alert/busy or green when merely
+    attached session, else rust/amber for Claude alert/busy or green when merely
     running; no border when the session isn't live."""
     w, h = key_size(deck)
     img = Image.new("RGB", (w, h), COLORS["action"])

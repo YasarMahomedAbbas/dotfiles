@@ -59,7 +59,7 @@ PanelWindow {
 
         Glass {
             anchors.fill: parent
-            edge: Colors.alpha(Colors.red, 0.6)
+            edge: Colors.alpha(Colors.attn, 0.6)
         }
 
         ColumnLayout {
@@ -68,7 +68,7 @@ PanelWindow {
             spacing: 3
 
             Text {
-                text: "<font color='" + Colors.red + "'>●</font>  claude board · "
+                text: "<font color='" + Colors.attn + "'>●</font>  claude board · "
                       + (root.session ? Board.sessionName(root.session) : "")
                 textFormat: Text.StyledText
                 color: Colors.alpha(Colors.fg1, 0.7)

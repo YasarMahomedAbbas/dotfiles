@@ -29,7 +29,7 @@ C_DIM="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
 C_TEXT="$(rgb "${SESH_TEXT_COLOR:-d8dee9}")"
 C_OK="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
 C_WARN="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
-C_ALERT="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+C_ALERT="$(rgb "${SESH_ATTN_COLOR:-e0703a}")"
 fzfc() { printf '%s' "${SESH_FZF_COLORS:-}" | tr ',' '\n' | sed -n "s/^$1:#//p" | head -1; }
 h_fg0="${SESH_FG0_COLOR:-$(fzfc 'fg+')}";   C_FG0="$(rgb "${h_fg0:-eceff4}")"
 h_blue="${SESH_BLUE_COLOR:-$(fzfc prompt)}"; C_BLUE="$(rgb "${h_blue:-81a1c1}")"

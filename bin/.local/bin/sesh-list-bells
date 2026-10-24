@@ -7,7 +7,7 @@
 #    travelsmart  develop
 #    dotfiles
 #
-#   ● needs you · <title>        red    — Claude is blocked on you (permission,
+#   ● needs you · <title>        rust   — Claude is blocked on you (permission,
 #                                         question, plan approval)
 #   ▶ <what it runs> <elapsed>    fg0    — a turn is in progress; yellow + "slow"
 #                                         once it runs past its typical time
@@ -50,7 +50,7 @@
 [ -r "$HOME/.config/theme/sesh-colors.sh" ] && . "$HOME/.config/theme/sesh-colors.sh"
 rgb() { printf '\033[38;2;%d;%d;%dm' "$((16#${1:0:2}))" "$((16#${1:2:2}))" "$((16#${1:4:2}))"; }
 fzfc() { printf '%s' "${SESH_FZF_COLORS:-}" | tr ',' '\n' | sed -n "s/^$1:#//p" | head -1; }
-C_RED="$(rgb "${SESH_BELL_COLOR:-bf616a}")"
+C_RED="$(rgb "${SESH_ATTN_COLOR:-e0703a}")"
 C_YELLOW="$(rgb "${SESH_BUSY_COLOR:-ebcb8b}")"
 C_GREEN="$(rgb "${SESH_OK_COLOR:-a3be8c}")"
 C_DIM="$(rgb "${SESH_DIM_COLOR:-4c566a}")"
