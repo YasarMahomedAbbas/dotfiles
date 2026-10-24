@@ -92,7 +92,8 @@ pa_fetch() {  # <cache file> — write title/goal/checkpoint lines, or leave it 
         printf 'title\t%s\n' "$(printf '%s' "$json" | jq -r '.title // ""')"
         # The Goal's first sentence: what the issue is for, in one line.
         printf 'goal\t%s\n' "$(printf '%s\n' "$body" | awk '/^## /{on=($0 ~ /^## Goal/); next} on && NF {print; exit}' \
-            | sed -E 's/\*\*?//g; s/`//g; s/\[([^]]*)\]\([^)]*\)/\1/g; s/([.!?])[[:space:]].*/\1/' | cut -c1-200)"
+            | sed -E 's/\*\*?//g; s/`//g; s/\[([^]]*)\]\([^)]*\)/\1/g; s/([.!?])[[:space:]].*/\1/' \
+            | awk '{ if (length($0) > 160) { s = substr($0, 1, 160); sub(/[[:space:],;:(]+[^[:space:]]*$/, "", s); $0 = s "…" } print }')"
         # Checkpoint lines: `- [x] **1 — Registry: …** · commit: …` → `x<TAB>1 — Registry: …`
         printf '%s\n' "$body" | awk '/^## /{on=($0 ~ /^## Checkpoints/); next} on' \
             | sed -nE 's/^- \[([ xX])\] \*\*([^*]+)\*\*.*/cp\t\1\t\2/p'
