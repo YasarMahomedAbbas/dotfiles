@@ -105,7 +105,9 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 |---|---|
 | `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
-| `board pill` | tmux status-right pill (prints nothing when all quiet) |
+| `board pill [#{status}]` | tmux status-right counts pill (prints nothing when all quiet); given `#{status}`, sets `status` to 2 while any session is open and back to `on` when none is |
+| `board here <session> <width>` | tmux status-left: this session's issue, title, stage and activity; `ticket-pill`'s pill when no Claude runs there |
+| `board pipelines <session> <width>` | tmux status line 2: a pill per pipeline, then the other sessions as counts |
 | `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell roster |
 | `board jump <key>` | focus Ghostty (`hyprctl dispatch 'hl.dsp.focus({ window = "class:com.mitchellh.ghostty" })'`), `tmux switch-client` + select window/pane, mark seen |
 | `board next` | jump to the oldest `needs_you` session (SUPER+N) |
@@ -143,7 +145,9 @@ the agent sidebar are gone).
 
 | surface | source | shows |
 |---|---|---|
-| tmux status-right | `#(board pill)` in `themes/templates/tmux.conf.tmpl` | `● 2 needs you` (rust pill), `▶ 1 ◐ 3` (fg0 / blue; ▶ yellow when a turn runs past typical). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
+| tmux status line 1, left | `#(board here #{session_name} #{client_width})` in `themes/templates/tmux.conf.tmpl` | after the session pill: `#1964 Invoice discount control · Verify · agent 5m` (issue dim, title, then stage and activity in the state's colour); with no Claude in the session, the ticket pill. Drops out on a narrow client |
+| tmux status line 1, right | `#(board pill #{status})` | `● 1 ▶ 1 ◐ 1 ✓ 1` in one pill (needs you rust, working fg0 or yellow past typical, background blue, unseen green). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
+| tmux status line 2 | `status-format[1]`: `#(board pipelines #{session_name} #{client_width})`; on only while a Claude session is open | a pill per pipeline, most urgent first: glyph, `#n`, six cells (✓ done, ! needs you, ▶ working, ◐ background, ○ idle or ahead) and the stage word (`impl 3/5`: tasks on travel-smart, checkpoints on personal-assistant). A needs-you pill sits on a rust tint; this session's is outlined in rust (thin caps, over- and underline). Then `+ other sessions ✓ 1 ○ 2`; pills that don't fit fold into it. `status-interval` is 5 s. Times are elapsed only |
 | `prefix+i` | `board roster` in a `display-popup -E -w 90% -h 80%` | fzf roster: glyph, ticket, problem, what it is doing, stack chip; preview = question + options, stage strip, checklist summary, agents with elapsed, design link. Opens with input hidden so letters are keys; `/` shows the filter, `esc` leaves it (or closes). Reloads every 3 s |
 | `pane-focus-in` hook | `board seen #{pane_id}` | focusing a pane clears its `✓ unseen`; `board list` also treats a pane some client is looking at as seen |
 | sesh picker (`prefix+s`) | `sesh-list-bells` (one `board list --json` per render) | status column `● needs you · <title>` / `▶ <detail> <elapsed>[ slow]` / `◐ background · N agents` / `✓ unseen` / nothing when idle |

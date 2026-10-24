@@ -8,7 +8,11 @@ them, drops stale ones, enriches each and acts on them.
 
   board list [--json]            sessions, needs_you > working > background > unseen > idle
   board summary [--json]         counts + the live stack per project
-  board pill                     tmux status-right pill (nothing when all quiet)
+  board pill [#{status}]         tmux status-right counts pill (nothing when all quiet);
+                                 with #{status}, keeps the second line on while any
+                                 session is open
+  board here <session> <width>   tmux status-left: this session's issue, stage, activity
+  board pipelines <session> <width>  tmux status line 2: a pill per pipeline
   board roster                   fzf roster (tmux prefix+i)
   board jump <key>               focus Ghostty, switch the tmux client to that pane, mark seen
   board next                     jump to the oldest needs_you session
@@ -368,9 +372,10 @@ def stack_state(ctx, wt):
 
 
 # ── loading ──────────────────────────────────────────────────────────────────────
-def load(enrich=True):
+def load(enrich=True, stacks=True):
     """Every live state file, enriched and sorted. Each entry carries a private
-    `_ctx` (worktree context) that is stripped before JSON output."""
+    `_ctx` (worktree context) that is stripped before JSON output. `stacks=False`
+    skips `wt-dev status` (the status line has no use for it); `stack` is then None."""
     now = now_ms()
     entries = []
     for f in sorted(BOARD_DIR.glob("*.json")):
@@ -396,7 +401,7 @@ def load(enrich=True):
 
     sessions = tmux_sessions() if entries else {}
     focused = focused_panes() if entries else set()
-    wt = wt_status() if (entries and enrich) else {}
+    wt = wt_status() if (entries and enrich and stacks) else {}
     for e in entries:
         # Unseen: finished after the last time anyone looked. A pane a client is
         # looking at right now counts as looked at.
@@ -525,6 +530,91 @@ def brief_for(e):
     return t.get("problem") or t.get("title") or e.get("branch") or os.path.basename(e.get("cwd") or "")
 
 
+# ── where a pipeline is: its six stages ─────────────────────────────────────────
+DEFAULT_STAGES = ["Start", "Implement", "Review", "Docs", "Verify", "PR"]
+
+
+def on_pipeline(e):
+    t = e.get("ticket") or {}
+    return bool(t.get("stage_index"))
+
+
+def stage_labels(e):
+    t = e.get("ticket") or {}
+    labels = t.get("stages") or []
+    return labels if len(labels) == 6 else DEFAULT_STAGES
+
+
+def impl_count(t):
+    """Implement's count: the checklist's tasks (travel-smart), else the issue's
+    checkpoints (personal-assistant); "" when neither is known."""
+    if t.get("tasks_total"):
+        return f"{t.get('tasks_done') or 0}/{t['tasks_total']}"
+    if t.get("checkpoints_total"):
+        return f"{t.get('checkpoints_done') or 0}/{t['checkpoints_total']}"
+    return ""
+
+
+def stage_label(e):
+    """The current stage's label ("Verify"), or the raw stage word off the table."""
+    t = e.get("ticket") or {}
+    i = t.get("stage_index")
+    if i and 1 <= i <= 6:
+        return stage_labels(e)[i - 1]
+    return t.get("stage") or ""
+
+
+def stage_word(e):
+    """The short word under a pill: `verify`, `impl 3/5`."""
+    t = e.get("ticket") or {}
+    if t.get("stage_index") == 2:
+        n = impl_count(t)
+        return "impl" + (f" {n}" if n else "")
+    return stage_label(e).lower()
+
+
+def strip_cells(e):
+    """Six (glyph, role) cells: done ✓, the current one by state (! needs you,
+    ▶ working, ◐ background, ○ idle), then ○ still ahead."""
+    idx = (e.get("ticket") or {}).get("stage_index") or 0
+    role, st = status_role(e)
+    now_glyph = {"needs_you": "!", "working": "▶", "background": "◐"}.get(st, "○")
+    now_role = role if st in ("needs_you", "working", "background") else "text"
+    cells = []
+    for i in range(1, 7):
+        if i < idx:
+            cells.append(("✓", "green"))
+        elif i == idx:
+            cells.append((now_glyph, now_role))
+        else:
+            cells.append(("○", "dim"))
+    return cells
+
+
+def activity(e, now=None):
+    """What is running, in two or three words with its elapsed time: `agent 5m`,
+    `Bash 12s`, `needs you · Results`."""
+    now = now or now_ms()
+    st = e["state"]
+    if e.get("stale"):
+        return "stale"
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        return "needs you · " + (a.get("title") or a.get("kind") or "?")
+    if st == "working":
+        cur = e.get("current") or {}
+        return f"{cur.get('tool') or 'working'} {elapsed(now - (cur.get('started') or e.get('since') or now))}"
+    if st == "background":
+        for kind, word in (("agents", "agent"), ("shells", "shell")):
+            r = running(e, kind)
+            if r:
+                first = min(x.get("started") or now for x in r)
+                more = f" +{len(r) - 1}" if len(r) > 1 else ""
+                return f"{word}{more} {elapsed(now - first)}"
+        return "background"
+    return "unseen" if e.get("unseen") else f"idle {elapsed(now - (e.get('since') or now))}"
+
+
 def fit(s, n):
     s = (s or "").replace("\t", " ").replace("\n", " ")
     return s if len(s) <= n else s[: max(0, n - 1)] + "…"
@@ -578,29 +668,167 @@ def cmd_summary(args):
         print(f"  {p:<16} {st['state']}{tail}")
 
 
-def cmd_pill(_args):
-    """`● N needs you` on rust, then `▶ N ◐ N` in a grey pill; nothing when all quiet.
-    Printed whole (caps included) for the same reason as `wt-dev tmux`: an empty pill
-    still renders as a blob and tmux cannot branch on a #()'s output."""
+# ── tmux status line ─────────────────────────────────────────────────────────────
+# Each command prints its pill(s) whole, caps included, or nothing: an empty pill
+# still renders as a blob and tmux cannot branch on a #()'s output. tmux re-reads
+# `#[…]` in the output, so text from a state file goes through tesc().
+CAP_O, CAP_C = "\ue0b6", "\ue0b4"            # round caps
+THIN_O, THIN_C = "\ue0b7", "\ue0b5"          # thin (outline) round caps
+
+
+def tesc(s):
+    return (s or "").replace("#", "##")
+
+
+def blend(fg, bg, a):
+    """`fg` at opacity `a` over `bg`, as hex: tmux has no alpha."""
+    f = [int(fg[i:i + 2], 16) for i in (0, 2, 4)]
+    b = [int(bg[i:i + 2], 16) for i in (0, 2, 4)]
+    return "".join(f"{round(x * a + y * (1 - a)):02x}" for x, y in zip(f, b))
+
+
+def tmux_role(t, e):
+    role, _st = status_role(e)
+    return t[role] if role in t else t["text"]
+
+
+def status_lines(want_two, current):
+    """Two status lines while any Claude session is open, one otherwise. The pill job
+    passes `#{status}` in, so this only touches tmux when the answer changes."""
+    if current and (current == "2") != want_two:
+        run(["tmux", "set-option", "-g", "status", "2" if want_two else "on"], timeout=2)
+
+
+def cmd_pill(args):
+    """Status line 1, right: the counts `● N ▶ N ◐ N ✓ N` (needs you in rust, working
+    frost or yellow once slow, background steel, unseen green) in one pill; nothing
+    when all quiet. `board pill #{status}` also keeps the second line on while any
+    session is open (see status_lines)."""
     entries = [e for e in load(enrich=False) if not e.get("stale")]
+    if args:
+        status_lines(bool(entries), args[0])
     need = sum(e["state"] == "needs_you" for e in entries)
     work = [e for e in entries if e["state"] == "working"]
     bg = sum(e["state"] == "background" for e in entries)
+    unseen = sum(bool(e.get("unseen")) for e in entries)
     t = theme()
-    o, c = "", ""
-    out = ""
+    inner = []
     if need:
-        out += (f"#[fg=#{t['attn']},bg=default]{o}#[bg=#{t['attn']},fg=#{t['bg0']},bold] ● {need} needs you "
-                f"#[fg=#{t['attn']},bg=default,nobold]{c}#[bg=default] ")
-    if work or bg:
-        inner = ""
-        if work:
-            fg = t["yellow"] if any(is_slow(e) for e in work) else t["fg0"]
-            inner += f"#[fg=#{fg}] ▶ {len(work)}"
-        if bg:
-            inner += f"#[fg=#{t['blue']}] ◐ {bg}"
-        out += f"#[fg=#{t['pill']},bg=default]{o}#[bg=#{t['pill']}]{inner} #[fg=#{t['pill']},bg=default]{c}#[bg=default] "
-    sys.stdout.write(out)
+        inner.append(f"#[fg=#{t['attn']},bold]● {need}#[nobold]")
+    if work:
+        inner.append(f"#[fg=#{t['yellow'] if any(is_slow(e) for e in work) else t['fg0']}]▶ {len(work)}")
+    if bg:
+        inner.append(f"#[fg=#{t['blue']}]◐ {bg}")
+    if unseen:
+        inner.append(f"#[fg=#{t['green']}]✓ {unseen}")
+    if not inner:
+        return
+    sys.stdout.write(f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] {' '.join(inner)} "
+                     f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+
+
+def cmd_here(args):
+    """Status line 1, left: this tmux session's Claude — `#1964 Invoice discount
+    control · Verify · agent 5m` — or, with no Claude in it, `ticket-pill`'s pill.
+
+      board here <session> <client_width>"""
+    sess = args[0] if args else ""
+    try:
+        width = int(args[1]) if len(args) > 1 else 200
+    except ValueError:
+        width = 200
+    mine = [e for e in load(stacks=False) if (e.get("tmux") or {}).get("session") == sess and not e.get("stale")]
+    if not mine:
+        if shutil.which("ticket-pill"):
+            sys.stdout.write(run(["ticket-pill", sess, str(width)], timeout=4) or "")
+        return
+    e = mine[0]                            # load() sorts the most urgent first
+    t, tk = theme(), e.get("ticket") or {}
+    # Same budget as ticket-pill: the session pill, the centred window list and the
+    # right side come out of the width first; below the floor the pill drops out.
+    budget = min(width - 108, 76)
+    if budget < 24:
+        return
+    tail = " · ".join(x for x in (stage_label(e) if on_pipeline(e) else "", activity(e)) if x)
+    num = f"#{tk['issue']} " if tk.get("issue") else ""
+    name = tk.get("title") or tk.get("problem") or e.get("branch") or os.path.basename(e.get("cwd") or "")
+    room = budget - len(num) - len(tail) - 3
+    if room < 8:
+        name, room = "", 0
+    text = fit(name, room) if room else ""
+    sys.stdout.write(
+        f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] "
+        + (f"#[fg=#{t['dim']}]{tesc(num)}" if num else "")
+        + (f"#[fg=#{t['text']}]{tesc(text)} " if text else "")
+        + f"#[fg=#{tmux_role(t, e)}]{'· ' if text or num else ''}{tesc(tail)} "
+        + f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+
+
+def pipeline_pill(e, t, this):
+    """`● #2021 !○○○○○ start`: glyph, number, the six-cell strip, the stage word.
+    Needs-you pills sit on a rust tint; this session's is outlined in rust."""
+    role, st = status_role(e)
+    fg = tmux_role(t, e)
+    bg = blend(t["attn"], t["bg0"], 0.16) if st == "needs_you" else t["pill"]
+    num = (e.get("ticket") or {}).get("issue")
+    strip = "".join(f"#[fg=#{t[r]}]{g}" for g, r in strip_cells(e))
+    body = (f"#[fg=#{fg}]{GLYPH[st]} #[fg=#{t['text']}]##{num} {strip} #[fg=#{fg}]{tesc(stage_word(e))}")
+    vis = 2 + len(f"#{num}") + 1 + 6 + 1 + len(stage_word(e)) + 4
+    if this:
+        a = t["attn"]
+        pill = (f"#[fg=#{a},bg=default]{THIN_O}#[bg=#{bg},overline,underscore,us=#{a}] {body} "
+                f"#[fg=#{a},bg=default,nooverline,nounderscore,us=default]{THIN_C}#[bg=default]")
+    else:
+        pill = f"#[fg=#{bg},bg=default]{CAP_O}#[bg=#{bg}] {body} #[fg=#{bg},bg=default]{CAP_C}#[bg=default]"
+    return pill, vis
+
+
+def cmd_pipelines(args):
+    """Status line 2: a pill per pipeline (a session with a ticket on a stage table),
+    most urgent first, this session's outlined, then the other sessions as counts.
+    Pills that do not fit the width are folded into the count.
+
+      board pipelines <session> <client_width>"""
+    sess = args[0] if args else ""
+    try:
+        width = int(args[1]) if len(args) > 1 else 200
+    except ValueError:
+        width = 200
+    entries = [e for e in load(stacks=False) if not e.get("stale")]
+    if not entries:
+        return
+    t = theme()
+    pipes = [e for e in entries if on_pipeline(e)]
+    others = [e for e in entries if not on_pipeline(e)]
+    pills = [(e, *pipeline_pill(e, t, (e.get("tmux") or {}).get("session") == sess)) for e in pipes]
+
+    def rest_pill(rest):
+        if not rest:
+            return "", 0
+        counts = {}
+        for e in rest:
+            _r, st = status_role(e)
+            counts[st] = counts.get(st, 0) + 1
+        order = [("needs_you", "attn"), ("working", "fg0"), ("background", "blue"), ("unseen", "green"), ("idle", "dim")]
+        parts = [f"#[fg=#{t[r]}]{GLYPH[s] if s != 'idle' else '○'} {counts[s]}" for s, r in order if counts.get(s)]
+        label = "+ other sessions" if pipes else "sessions"
+        txt = f"#[fg=#{t['dim']}]{label} " + " ".join(parts)
+        vis = len(label) + 1 + sum(len(str(counts[s])) + 3 for s, _ in order if counts.get(s)) + 4
+        return f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] {txt} #[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default]", vis
+
+    # Drop from the end (least urgent) until it fits, never this session's pill.
+    shown, folded = list(pills), []
+    while True:
+        rp, rvis = rest_pill(others + folded)
+        used = sum(v + 1 for _e, _p, v in shown) + rvis
+        if used <= width or not shown:
+            break
+        drop = next((i for i in range(len(shown) - 1, -1, -1)
+                     if (shown[i][0].get("tmux") or {}).get("session") != sess), None)
+        if drop is None:
+            break
+        folded.insert(0, shown.pop(drop)[0])
+    sys.stdout.write(" ".join(p for _e, p, _v in shown) + (" " if shown and rp else "") + rp)
 
 
 def tmux_client():
@@ -1069,6 +1297,7 @@ def main():
     table = {
         "list": cmd_list, "ls": cmd_list,
         "summary": cmd_summary, "pill": cmd_pill, "roster": cmd_roster,
+        "here": cmd_here, "pipelines": cmd_pipelines,
         "jump": cmd_jump, "next": cmd_next, "answer": cmd_answer,
         "stack": cmd_stack, "design": cmd_design, "seen": cmd_seen, "keys": cmd_keys,
         # roster internals
