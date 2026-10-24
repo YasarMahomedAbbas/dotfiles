@@ -34,11 +34,15 @@ state files exactly as the mod wrote them, each with these fields added:
                   | "off" (another tree of the project owns it, or nothing runs), or
                   null when the worktree is not a wt-dev project
   ticket   obj    null when nothing is known, else
-                  {issue, title, problem, stage, stage_index, stage_total, tasks_done,
-                   tasks_total, checkpoint, slug} — any field may be null. From
-                  `ticket-context <cwd>` (cached 30 s per cwd); `issue` falls back to a
-                  tmux session named `issue-<n>`; `stage` falls back to the session's
+                  {issue, title, problem, pipeline, stage, stage_index, stage_total,
+                   stages, tasks_done, tasks_total, checkpoints_done, checkpoints_total,
+                   checkpoint, slug} — any field may be null. From `ticket-context <cwd>`
+                  (cached 30 s per cwd); `issue` falls back to a tmux session named
+                  `issue-<n>` or `pa-<n>`; `stage` falls back to the session's
                   @pipeline_label (set by pipeline-status) when ticket-context has none.
+                  `pipeline` is "frontend" (travel-smart) or "pa" (personal-assistant);
+                  `stages` the six short labels of its stage table (["Refine",
+                  "Implement", …]), `stage_index` counting from 1 into them.
 
 `board summary --json`:
   {"needs_you": n, "working": n, "background": n, "unseen": n,
@@ -322,20 +326,24 @@ def build_ticket(e, ctx, sessions):
     sess = (e.get("tmux") or {}).get("session") or ""
     issue = _int(tc.get("issue"))
     if issue is None:
-        m = re.fullmatch(r"issue-(\d+)", sess)
+        m = re.fullmatch(r"(?:issue|pa)-(\d+)", sess)
         issue = int(m.group(1)) if m else None
-    on_ticket = bool(tc.get("slug")) or issue is not None
+    on_ticket = bool(tc.get("slug") or tc.get("pipeline")) or issue is not None
     t = {
         "issue": issue,
         "title": tc.get("title") or None,
         "problem": tc.get("problem") or None,
+        "pipeline": tc.get("pipeline") if on_ticket else None,
         # ticket-context reports stage 1 for ANY git dir with no ticket folder, so its
         # stage only means something on a ticket.
         "stage": tc.get("stage") if on_ticket else None,
         "stage_index": _int(tc.get("stage_index")) if on_ticket else None,
         "stage_total": _int(tc.get("stage_total")) if on_ticket else None,
+        "stages": (tc.get("stage_labels") or "").split(",") if on_ticket and tc.get("stage_labels") else None,
         "tasks_done": _int(tc.get("tasks_done")),
         "tasks_total": _int(tc.get("tasks_total")),
+        "checkpoints_done": _int(tc.get("checkpoints_done")),
+        "checkpoints_total": _int(tc.get("checkpoints_total")),
         "checkpoint": tc.get("checkpoint") or None,
         "slug": tc.get("slug") or None,
     }

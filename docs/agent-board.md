@@ -103,7 +103,7 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 
 | command | does |
 |---|---|
-| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,stage,stage_index,stage_total,tasks_done,tasks_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
+| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
 | `board pill` | tmux status-right pill (prints nothing when all quiet) |
 | `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell roster |
