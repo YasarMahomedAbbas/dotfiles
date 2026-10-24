@@ -291,14 +291,15 @@ if [ -n "$checklist" ]; then
     emit tasks_done "$done_n"
     emit tasks_total "$((done_n + open_n))"
 
-    # The active checkpoint is the last one whose heading precedes the first
-    # still-unchecked task; with none unchecked, the last checkpoint in the file.
-    first_open="$(grep -nE '^(### \[ \]|[[:space:]]*- \[ \])' "$checklist" 2>/dev/null | head -1 | cut -d: -f1)"
-    if [ -n "$first_open" ]; then
-        cp="$(head -n "$first_open" "$checklist" | grep -E '^## Checkpoint' | tail -1)"
-    else
-        cp="$(grep -E '^## Checkpoint' "$checklist" 2>/dev/null | tail -1)"
-    fi
+    # The active checkpoint is the one holding the first still-unchecked task; with
+    # none unchecked, the last checkpoint in the file.
+    # Only boxes inside a checkpoint count: the brief and acceptance sections above
+    # the first checkpoint carry `- [ ]` lists of their own.
+    cp="$(awk '
+        /^## Checkpoint/ { in_cp = 1; last = $0; next }
+        /^## /           { in_cp = 0; next }
+        in_cp && /^(### \[ \]|[[:space:]]*- \[ \])/ { print last; found = 1; exit }
+        END { if (!found) print last }' "$checklist" 2>/dev/null)"
     # Drop the `· commit: \`…\`` tail — it is instruction, not status.
     emit checkpoint "$(printf '%s' "$cp" | sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*·[[:space:]]*commit:.*$//')"
 
