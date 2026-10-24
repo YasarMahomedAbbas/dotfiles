@@ -156,10 +156,27 @@ Colours come from `~/.config/theme/sesh-colors.sh`, which gained `SESH_FG0_COLOR
 
 **Still from the old status machinery, unchanged:**
 
-- `ticket-context <dir|session>` resolves where a frontend-pipeline worktree stands (branch,
-  slug, issue, title, `problem`, stage from the NOTES stage log, checklist progress). It
-  is what `board` enriches `ticket` from. `problem` is the one line saying what is wrong:
-  the checklist's `Problem:` line, else the `Issue:` line's title, else `title`.
+- `ticket-context <dir|session>` resolves where a pipeline worktree stands (branch,
+  `pipeline`, slug, issue, title, `problem`, stage from the stage log, the six
+  `stage_labels`, checklist and checkpoint progress). It is what `board` enriches `ticket`
+  from. Two stage tables:
+
+  | stage_index | travel-smart (`frontend`) | personal-assistant (`pa`) |
+  |---|---|---|
+  | 1 | Start · `start-ticket`: no ticket folder/checklist | Refine · `refine-issue`: the issue has no `## Checkpoints` |
+  | 2 | Implement · `implement-plan`: NOTES has no `## Implementation` | Implement · `implement-plan`: a checkpoint unticked, or no `## Implementation` |
+  | 3 | Review · `review` | Review · `self-review` |
+  | 4 | Docs · `doc-drift` | Docs · `doc-drift` |
+  | 5 | Verify · `human-verification` | Verify · `self-verify` (`## Self verification`) |
+  | 6 | PR · `raise-pr` | PR · `raise-pr` |
+
+  travel-smart reads `Docs/Frontend/tasks/<slug>/` (`<type>/frontend/<slug>` branches);
+  personal-assistant reads `docs/tasks/<n>-<slug>/NOTES.md` in a `pa-<n>` worktree or on an
+  `<n>-<slug>` branch, and the issue (title, the Goal's first sentence as `problem`, the
+  `## Checkpoints` boxes) through `gh`, cached 60 s per issue under
+  `~/.cache/ticket-context/` and refreshed in the background. For travel-smart, `problem`
+  is the checklist's `Problem:` line, else the `Issue:` line's title, else `title`; a
+  checkpoint counts as done once every task under its `## Checkpoint` heading is ticked.
 - `pipeline-status <running|blocked|done> <label>` stamps `@pipeline_state` /
   `@pipeline_label`. It no longer renames windows; `board` uses the label as the stage
   when `ticket-context` has none.

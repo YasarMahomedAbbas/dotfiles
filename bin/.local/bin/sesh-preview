@@ -89,11 +89,12 @@ if tmux has-session -t "=$name" 2>/dev/null; then
     fi
 
     # ------------------------------------------------------------- the ticket card
-    dir="" root="" branch="" slug="" issue="" title="" problem="" stage="" stage_index=""
+    dir="" root="" branch="" pipeline="" slug="" issue="" title="" problem="" stage="" stage_index=""
+    stage_labels=""
     tasks_done="" tasks_total="" checkpoint="" dirty="" commits=""
     eval "$(ticket-context "$name" 2>/dev/null)"
 
-    if [ -n "$branch" ]; then
+    if [ -n "$branch" ] || [ -n "$pipeline" ]; then
         # The headline is `problem`, not `title`. Scanning six sessions, the feature's
         # name ("South African money formatting") only helps if you already remember
         # the ticket; what you came here for is the thing that is wrong. `title` is not
@@ -105,10 +106,10 @@ if tmux has-session -t "=$name" 2>/dev/null; then
         elif [ -n "$issue" ]; then
             printf "  ${C_ACCENT}#%s${C_RESET}\n" "$issue"
         fi
-        printf "  ${C_DIM}%s${C_RESET}\n" "$branch"
+        printf "  ${C_DIM}%s${C_RESET}\n" "${branch:-detached}"
 
         line=""
-        [ -n "$commits" ] && [ "$commits" != "0" ] && line="$commits commit(s) ahead of develop"
+        [ -n "$commits" ] && [ "$commits" != "0" ] && line="$commits commit(s) ahead of $([ "$pipeline" = pa ] && echo main || echo develop)"
         if [ -n "$dirty" ] && [ "$dirty" != "0" ]; then
             line="${line:+$line · }$dirty file(s) uncommitted"
         fi
@@ -116,12 +117,13 @@ if tmux has-session -t "=$name" 2>/dev/null; then
         printf "\n"
 
         # --------------------------------------------------------- the stage rail
-        # Only meaningful once a ticket folder exists; before that every session
-        # would read as "stage 1" whether or not it is on the pipeline at all.
-        if [ -n "$slug" ]; then
+        # Only on a pipeline (ticket-context names which); otherwise every session
+        # would read as "stage 1" whether or not it is on one at all.
+        if [ -n "$pipeline" ]; then
             printf "  ${C_DIM}pipeline${C_RESET}  "
             i=1
-            for s in plan build review docs verify PR; do
+            IFS=, read -ra labels <<< "${stage_labels:-Start,Implement,Review,Docs,Verify,PR}"
+            for s in "${labels[@]}"; do
                 if   [ "$i" -lt "${stage_index:-0}" ]; then printf "${C_OK}✓ %s${C_RESET}  " "$s"
                 elif [ "$i" -eq "${stage_index:-0}" ]; then printf "${C_WARN}▶ %s${C_RESET}  " "$s"
                 else                                        printf "${C_DIM}· %s${C_RESET}  " "$s"

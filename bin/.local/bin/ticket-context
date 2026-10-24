@@ -1,20 +1,29 @@
 #!/bin/bash
-# ticket-context — resolve what a frontend-pipeline working tree is actually doing.
+# ticket-context — resolve what a pipeline working tree is actually doing.
 #
 # Usage:  ticket-context <dir|session-name>
 #
 # Emits shell-sourceable `key=value` lines (values single-quote escaped). Keys that
 # cannot be resolved are simply omitted, so every consumer must tolerate a blank.
 #
-#   dir root branch slug issue title problem folder
-#   stage stage_index stage_total stage_next
-#   tasks_done tasks_total checkpoint
+#   dir root branch pipeline slug issue title problem folder
+#   stage stage_index stage_total stage_labels
+#   tasks_done tasks_total checkpoints_done checkpoints_total checkpoint
 #   dirty commits
 #
-# The stage table is a transcription of the one in `frontend-pipeline/SKILL.md`
-# ("Detect the next stage") — the ticket folder is the pipeline's own log, so this
-# reads the same evidence the orchestrator does rather than keeping a second state
-# file that could disagree with it.
+# Two pipelines, each with its own stage table, transcribed from its orchestrator's
+# "Detect the next stage" — the pipeline's own log is the evidence, so this reads
+# what the orchestrator reads rather than keeping a second state file that could
+# disagree with it:
+#
+#   pipeline=frontend  travel-smart's frontend-pipeline (`<type>/frontend/<slug>`,
+#                      ticket folder Docs/Frontend/tasks/<slug>/)
+#   pipeline=pa        personal-assistant's pipeline (`pa-<n>` worktree, branch
+#                      `<n>-<slug>`, stage log docs/tasks/<n>-<slug>/NOTES.md, the
+#                      plan's `## Checkpoints` in the GitHub issue)
+#
+# `stage` is the stage's skill name; `stage_labels` the six short labels the
+# displays draw (comma-separated, `stage_index` counts from 1 into them).
 #
 # Consumers: board (the agent board's `ticket`, cached 30 s per worktree), sesh-preview
 # (the picker's ticket card), ticket-pill and ticket-window (the ticket window's stage
@@ -48,6 +57,128 @@ emit root "$root"
 
 branch="$(git -C "$dir" branch --show-current 2>/dev/null)"
 emit branch "$branch"
+
+# --- Working-tree state (both pipelines; emitted last) ---------------------------
+tree_state() {
+    emit dirty "$(git -C "$dir" status --porcelain 2>/dev/null | grep -c .)"
+    local base
+    base="$(git -C "$dir" rev-parse --verify -q "$1" 2>/dev/null)"
+    [ -n "$base" ] && emit commits "$(git -C "$dir" rev-list --count "$1..HEAD" 2>/dev/null)"
+}
+
+# --- personal-assistant: pa-<n> ------------------------------------------------
+# A tree is on this pipeline when it has the stage-log folder (docs/tasks/) and
+# either sits in a `pa-<n>` worktree or is on an `<n>-<slug>` branch. Before
+# refinement the worktree is detached at origin/main, so the folder name is the
+# only thing that carries the issue number.
+pa_issue=""
+if [ -d "$root/docs/tasks" ]; then
+    if [[ "$branch" =~ ^([0-9]+)-. ]]; then
+        pa_issue="${BASH_REMATCH[1]}"
+    elif [[ "$(basename "$root")" =~ ^pa-([0-9]+)$ ]]; then
+        pa_issue="${BASH_REMATCH[1]}"
+    fi
+fi
+
+# The issue holds the plan (title, `## Goal`, `## Checkpoints`), so it comes from gh:
+# cached per repo + issue for 60 s, and refreshed in the background once stale so a
+# caller (tmux's status line, board) never waits on the network after the first read.
+PA_TTL=60
+pa_fetch() {  # <cache file> — write title/goal/checkpoint lines, or leave it alone
+    local json body tmp="$1.$$"
+    json="$(cd "$dir" && timeout 4 gh issue view "$pa_issue" --json title,body 2>/dev/null)" || { touch "$1"; return; }
+    body="$(printf '%s' "$json" | jq -r '.body // ""')"
+    {
+        printf 'title\t%s\n' "$(printf '%s' "$json" | jq -r '.title // ""')"
+        # The Goal's first sentence: what the issue is for, in one line.
+        printf 'goal\t%s\n' "$(printf '%s\n' "$body" | awk '/^## /{on=($0 ~ /^## Goal/); next} on && NF {print; exit}' \
+            | sed -E 's/\*\*?//g; s/`//g; s/\[([^]]*)\]\([^)]*\)/\1/g; s/([.!?])[[:space:]].*/\1/' | cut -c1-200)"
+        # Checkpoint lines: `- [x] **1 — Registry: …** · commit: …` → `x<TAB>1 — Registry: …`
+        printf '%s\n' "$body" | awk '/^## /{on=($0 ~ /^## Checkpoints/); next} on' \
+            | sed -nE 's/^- \[([ xX])\] \*\*([^*]+)\*\*.*/cp\t\1\t\2/p'
+    } > "$tmp" && mv "$tmp" "$1"
+}
+
+pa_context() {
+    emit pipeline pa
+    local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/ticket-context"
+    local key cache age
+    key="$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^.*[:/]([^/]+/[^/]+)$#\1#; s#\.git$##; s#/#_#g')"
+    cache="$cache_dir/${key:-local}-$pa_issue"
+    mkdir -p "$cache_dir"
+    if [ ! -f "$cache" ]; then
+        pa_fetch "$cache"
+    else
+        age=$(( $(date +%s) - $(stat -c %Y "$cache" 2>/dev/null || echo 0) ))
+        if [ "$age" -ge "$PA_TTL" ] && mkdir "$cache.lock" 2>/dev/null; then
+            ( touch "$cache"; pa_fetch "$cache"; rmdir "$cache.lock" ) </dev/null >/dev/null 2>&1 &
+            disown
+        fi
+    fi
+
+    local title="" goal="" cp_done=0 cp_total=0 checkpoint="" known=""
+    if [ -s "$cache" ]; then
+        known=1
+        while IFS=$'\t' read -r k a b; do
+            case "$k" in
+                title) title="$a" ;;
+                goal)  goal="$a" ;;
+                cp)    cp_total=$((cp_total + 1))
+                       if [ "$a" = " " ]; then [ -z "$checkpoint" ] && checkpoint="$b"
+                       else cp_done=$((cp_done + 1)); fi ;;
+            esac
+        done < "$cache"
+    fi
+
+    local slug="" folder="" notes=""
+    [[ "$branch" =~ ^[0-9]+- ]] && slug="$branch"
+    emit slug "$slug"
+    if [ -n "$slug" ] && [ -d "$root/docs/tasks/$slug" ]; then
+        folder="$root/docs/tasks/$slug"
+        [ -f "$folder/NOTES.md" ] && notes="$folder/NOTES.md"
+    fi
+    emit folder "$folder"
+    emit issue "$pa_issue"
+    emit title "$title"
+    emit problem "${goal:-$title}"
+
+    has() { [ -n "$notes" ] && grep -qE "^## $1" "$notes" 2>/dev/null; }
+    # pipeline/SKILL.md, "Detect the next stage". With the issue unreadable (gh down,
+    # first fetch failed) the checkpoints are unknown: a branch means refinement is
+    # over (implement-plan cuts it), no branch means it hasn't happened.
+    local stage stage_index
+    if { [ -n "$known" ] && [ "$cp_total" -eq 0 ]; } || { [ -z "$known" ] && [ -z "$slug" ]; }; then
+        stage="refine-issue";   stage_index=1
+    elif [ "$cp_done" -lt "$cp_total" ] || ! has 'Implementation'; then
+        stage="implement-plan"; stage_index=2
+    elif ! has 'Review'; then
+        stage="self-review";    stage_index=3
+    elif ! has 'Doc drift'; then
+        stage="doc-drift";      stage_index=4
+    elif ! has 'Self verification'; then
+        stage="self-verify";    stage_index=5
+    else
+        stage="raise-pr";       stage_index=6
+    fi
+    emit stage "$stage"
+    emit stage_index "$stage_index"
+    emit stage_total 6
+    emit stage_labels "Refine,Implement,Review,Docs,Verify,PR"
+    if [ "$cp_total" -gt 0 ]; then
+        emit checkpoints_done "$cp_done"
+        emit checkpoints_total "$cp_total"
+        # the one being built; with every box ticked, nothing is
+        emit checkpoint "$checkpoint"
+    fi
+    tree_state origin/main
+}
+
+if [ -n "$pa_issue" ]; then
+    pa_context
+    exit 0
+fi
+
+# --- travel-smart: the frontend pipeline -----------------------------------------
 
 # Branch format is `<type>/frontend/<slug>`; the slug is what names the ticket
 # folder. A detached HEAD or a placeholder branch (`issue-42`) yields no slug,
@@ -88,6 +219,9 @@ fi
 [ -z "$issue" ] && issue="$(printf '%s' "$dir" | grep -oE 'issue-[0-9]+' | head -1 | grep -oE '[0-9]+')"
 emit issue "$issue"
 emit title "$title"
+# Any git dir gets this far (and the stage table below calls it start-ticket), so
+# only a tree that names a ticket is on the pipeline.
+{ [ -n "$slug" ] || [ -n "$issue" ]; } && emit pipeline frontend
 
 # --- The problem one-liner ------------------------------------------------------
 # What the ticket is FOR, in one sentence. `title` names the feature — "South
@@ -140,6 +274,7 @@ fi
 emit stage "$stage"
 emit stage_index "$stage_index"
 emit stage_total 6
+emit stage_labels "Start,Implement,Review,Docs,Verify,PR"
 
 # --- Checklist progress ---------------------------------------------------------
 # Two formats are in the wild: the current pipeline writes tasks as `### [x] 1.1 — …`
@@ -166,11 +301,20 @@ if [ -n "$checklist" ]; then
     fi
     # Drop the `· commit: \`…\`` tail — it is instruction, not status.
     emit checkpoint "$(printf '%s' "$cp" | sed -E 's/^#+[[:space:]]*//; s/[[:space:]]*·[[:space:]]*commit:.*$//')"
+
+    # Checkpoints: a `## Checkpoint` section is done once no task in it is open.
+    read -r cps_done cps_total < <(awk '
+        function flush() { if (in_cp) d += !open }
+        /^## Checkpoint/ { flush(); in_cp = 1; n++; open = 0; next }
+        /^## /           { flush(); in_cp = 0; next }
+        in_cp && /^(### \[ \]|[[:space:]]*- \[ \])/ { open = 1 }
+        END { flush(); print d + 0, n + 0 }' "$checklist")
+    if [ "${cps_total:-0}" -gt 0 ]; then
+        emit checkpoints_done "$cps_done"
+        emit checkpoints_total "$cps_total"
+    fi
 fi
 
-# --- Working-tree state ---------------------------------------------------------
-emit dirty "$(git -C "$dir" status --porcelain 2>/dev/null | grep -c .)"
-base="$(git -C "$dir" rev-parse --verify -q origin/develop 2>/dev/null)"
-[ -n "$base" ] && emit commits "$(git -C "$dir" rev-list --count origin/develop..HEAD 2>/dev/null)"
+tree_state origin/develop
 
 exit 0
