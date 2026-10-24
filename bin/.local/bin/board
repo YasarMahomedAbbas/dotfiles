@@ -500,7 +500,7 @@ def doing(e, now=None):
     return "unseen" if e.get("unseen") else "idle"
 
 
-GLYPH = {"needs_you": "●", "working": "▶", "background": "◐", "unseen": "✓", "idle": "·", "stale": "○"}
+GLYPH = {"needs_you": "●", "working": "▶", "background": "◐", "unseen": "✓", "idle": "○", "stale": "○"}
 
 
 def status_role(e):
@@ -612,7 +612,9 @@ def activity(e, now=None):
                 more = f" +{len(r) - 1}" if len(r) > 1 else ""
                 return f"{word}{more} {elapsed(now - first)}"
         return "background"
-    return "unseen" if e.get("unseen") else f"idle {elapsed(now - (e.get('since') or now))}"
+    if e.get("unseen"):
+        return f"unseen {elapsed(now - (e.get('finished_at') or e.get('since') or now))}"
+    return f"idle {elapsed(now - (e.get('since') or now))}"
 
 
 def fit(s, n):
@@ -1027,15 +1029,108 @@ def set_mode(mode, key=""):
         pass
 
 
+def roster_row(e, paint, width):
+    """`● #2021 !○○○○○ Agency feature switches…  2m` for a pipeline; a plain session
+    is `✓ travelsmart · develop   unseen 5m`. Glyph and number in the state's colour."""
+    role, st = status_role(e)
+    now = now_ms()
+    when = elapsed(now - (e.get("since") or now))
+    chip = {"live": paint("green", " ● stack"), "starting": paint("yellow", " ◐ stack")}.get(e.get("stack"), "")
+    chip_w = 8 if chip else 0
+    if on_pipeline(e):
+        num = fit(label_for(e), 6)
+        strip = "".join(paint(r, g) for g, r in strip_cells(e))
+        room = max(10, width - 2 - 7 - 7 - 1 - len(when) - chip_w)
+        return (f"{paint(role, GLYPH[st] + ' ' + f'{num:<6}', bold=st != 'idle')} {strip} "
+                f"{paint('text', f'{fit(brief_for(e), room):<{room}}')} {paint('dim', when)}{chip}")
+    sess = (e.get("tmux") or {}).get("session") or os.path.basename(e.get("cwd") or "") or e["key"]
+    name = f"{sess} · {e['branch']}" if e.get("branch") else sess
+    tail = activity(e, now) + (" slow" if is_slow(e, now) else "")
+    room = max(10, width - 2 - len(tail) - 2 - chip_w)
+    dim = st in ("idle", "stale")
+    return (f"{paint(role, GLYPH[st])} {paint('dim' if dim else 'text', f'{fit(name, room):<{room}}')}  "
+            f"{paint(role if not dim else 'dim', tail)}{chip}")
+
+
 def roster_rows():
     paint = Paint(True)
+    cols = int(os.environ.get("FZF_COLUMNS") or 0) or shutil.get_terminal_size((160, 40)).columns
+    width = max(40, cols // 2 - 4)          # the list is the left half (preview right:50%)
     for e in load():
-        print(f"{e['key']}\t{row(e, paint)}")
+        print(f"{e['key']}\t{roster_row(e, paint, width)}")
 
 
 def wrap(text, width, indent="  "):
     import textwrap
     return [indent + ln for ln in textwrap.wrap(text or "", max(20, width - len(indent))) or [""]]
+
+
+def stepper(e, paint, width):
+    """The text stepper: six nodes on a line (● done, ◉ now in the state's colour,
+    ○ ahead), green ━ up to the current stage, then the labels and, under Implement,
+    its count, under the current stage its elapsed time.
+
+        ●━━━━━━━●━━━━━━━●━━━━━━━◉───────○───────○
+      Start  Implement Review   Docs   Verify    PR
+               17/17                    5m
+    """
+    t = e.get("ticket") or {}
+    idx = t.get("stage_index") or 0
+    labels = stage_labels(e)
+    role, st = status_role(e)
+    now_role = role if st in ("needs_you", "working", "background") else "text"
+    left = 4
+    gap = max(6, (width - left - 4) // 5)
+    pos = [left + i * gap for i in range(6)]
+    line = ""
+    for i in range(6):
+        n = i + 1
+        node = paint("green", "●") if n < idx else paint(now_role, "◉", bold=True) if n == idx else paint("dim", "○")
+        if i:
+            seg = ("━" if n <= idx else "─") * (gap - 1)
+            line += paint("green" if n <= idx else "dim", seg)
+        line += node
+    out = [" " * left + line]
+
+    def under(texts):
+        """One line with each (text, role) centred under its node, never overlapping."""
+        s, col = "", 0
+        for i, (txt, r, bold) in enumerate(texts):
+            if not txt:
+                continue
+            at = max(col, pos[i] - len(txt) // 2, 0)
+            s += " " * (at - col) + paint(r, txt, bold=bold)
+            col = at + len(txt) + 1
+            s += " "
+        return s.rstrip()
+
+    lab = []
+    for i, l in enumerate(labels):
+        n = i + 1
+        lab.append((l, now_role if n == idx else "text" if n < idx else "dim", n == idx))
+    out.append(under(lab))
+    subs = [("", "dim", False)] * 6
+    if impl_count(t):
+        subs[1] = (impl_count(t), "dim", False)
+    if 1 <= idx <= 6 and idx != 2:
+        subs[idx - 1] = (elapsed(now_ms() - (e.get("since") or now_ms())), "dim", False)
+    if any(s[0] for s in subs):
+        out.append(under(subs))
+    return out
+
+
+def stack_line(e):
+    """`live · o open`, `off · issue-1654 owns travel-smart`, …"""
+    st = e.get("stack")
+    if not st:
+        return None, None
+    if st in ("live", "starting"):
+        return st, "o open"
+    proj = (e.get("_ctx") or {}).get("project")
+    s = wt_status().get(proj or "", {})
+    owner = (f"live on {s['tree']}" if s.get("tree") and s.get("state") in ("live", "starting")
+             else f"{proj} is {s.get('state') or 'stopped'}")
+    return st, f"{owner} · s s switch here"
 
 
 def preview(key):
@@ -1052,18 +1147,29 @@ def preview(key):
         set_mode("")
         mode = ""
     now = now_ms()
-    role, _st = status_role(e)
+    role, st = status_role(e)
     t = e.get("ticket") or {}
+    ctx = e.get("_ctx") or {}
+    rule = "  " + paint("dim", "─" * max(10, width - 4))
+
+    # ── what: the issue, its title, the problem
     out = []
-    head = paint("accent", label_for(e), bold=True)
-    sess = (e.get("tmux") or {}).get("session")
-    if sess and t.get("issue"):
-        head += "  " + paint("dim", sess)
-    out.append(f"  {head}   {paint(role, doing(e, now))}")
-    if brief_for(e):
-        out += [paint("text", ln) for ln in wrap(brief_for(e), width)]
-    if e.get("branch") and e["branch"] != brief_for(e):
-        out.append("  " + paint("dim", e["branch"]))
+    sess = (e.get("tmux") or {}).get("session") or ""
+    where = ctx.get("project") or os.path.basename(ctx.get("main") or "") or sess
+    if t.get("issue"):
+        head = paint("text", f"#{t['issue']}") + " " + paint("fg0", fit(t.get("title") or brief_for(e), width - 12 - len(where)), bold=True)
+        headw = len(f"#{t['issue']} ") + len(fit(t.get("title") or brief_for(e), width - 12 - len(where)))
+    else:
+        name = f"{sess} · {e['branch']}" if sess and e.get("branch") else sess or e.get("branch") or e["key"]
+        head = paint("fg0", fit(name, width - 12 - len(where)), bold=True)
+        headw = len(fit(name, width - 12 - len(where)))
+    pad = max(2, width - 4 - headw - len(where))
+    out.append("  " + head + " " * pad + paint("dim", where))
+    problem = t.get("problem")
+    if problem and problem != t.get("title"):
+        out += [paint("text", ln) for ln in wrap(problem, width)]
+    elif not t.get("issue") and e.get("cwd"):
+        out.append("  " + paint("dim", fit(e["cwd"].replace(str(Path.home()), "~"), width - 4)))
     out.append("")
 
     if mode == "keys":
@@ -1091,80 +1197,84 @@ def preview(key):
         print("\n".join(out))
         return
 
-    # ── the question
-    if e["state"] == "needs_you":
-        a = e.get("attention") or {}
-        out.append(paint("attn", f"  {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
-        out += [paint("text", ln) for ln in wrap(a.get("text") or "", width)]
-        for o in a.get("options") or []:
-            out.append(f"    {paint("attn", o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+    # ── where: the stepper
+    if on_pipeline(e):
+        out += stepper(e, paint, width)
         out.append("")
-    elif e["state"] == "working" and e.get("current"):
+    out.append(rule)
+
+    # ── now: the stage in words, then what is running, or the question
+    stage = stage_label(e) if on_pipeline(e) else ""
+    nowtxt = {"needs_you": "waiting on you", "working": "", "background": "agents and shells running",
+              "unseen": "finished · not looked at yet", "idle": "idle", "stale": "gone quiet"}.get(st, "")
+    if st == "working":
+        cur = e.get("current") or {}
+        nowtxt = cur.get("tool") or "working"
+    head = paint(role, "NOW", bold=True) + "  " + (paint("fg0", stage, bold=True) + paint("text", " · ") if stage else "")
+    out.append("  " + head + paint("text", fit(nowtxt, width - 12 - len(stage))))
+    out.append("")
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        out.append(paint("attn", f"  ? {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
+        out += [paint("text", ln) for ln in wrap(a.get("text") or "", width, "    ")]
+        for o in a.get("options") or []:
+            out.append(f"    {paint('attn', o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+        out.append("")
+    elif st == "working" and e.get("current"):
         cur = e["current"]
         el = elapsed(now - (cur.get("started") or now))
         typ = f" · typical {elapsed(cur['typical_ms'])}" if cur.get("typical_ms") else ""
-        out.append("  " + paint(role, f"▶ {cur.get('tool', '')}  {cur.get('detail') or ''}") + paint("dim", f"  {el}{typ}"))
-        out.append("")
-
-    # ── stage strip + checklist summary
-    if t.get("stage_index"):
-        strip = []
-        for i, s in enumerate(["plan", "build", "review", "docs", "verify", "PR"], 1):
-            if i < t["stage_index"]:
-                strip.append(paint("green", f"✓ {s}"))
-            elif i == t["stage_index"]:
-                strip.append(paint("yellow", f"▶ {s}"))
-            else:
-                strip.append(paint("dim", f"· {s}"))
-        out.append("  " + paint("dim", "pipeline  ") + "  ".join(strip))
-    elif t.get("stage"):
-        out.append("  " + paint("dim", "stage     ") + paint("text", t["stage"]))
-    if t.get("checkpoint"):
-        out.append("  " + paint("text", fit(t["checkpoint"], width - 4)))
-    if t.get("tasks_total"):
-        w = 20
-        filled = (t.get("tasks_done") or 0) * w // t["tasks_total"]
-        out.append("  " + paint("dim", "checklist ") + paint("green", "█" * filled + "░" * (w - filled))
-                   + paint("dim", f" {t.get('tasks_done') or 0}/{t['tasks_total']}"))
+        out.append("  " + paint(role, "▶") + " " + paint("text", fit(cur.get("detail") or cur.get("tool") or "", width - 24))
+                   + paint("dim", f"  {el}{typ}"))
+    # what is running, then what finished in the last quarter hour
+    recent = now - 15 * 60_000
+    ags = [a for a in e.get("agents") or [] if a.get("status") in ("running", "needs_you") or (a.get("ended") or 0) > recent]
+    shs = [s for s in e.get("shells") or [] if s.get("status") == "running" or (s.get("started") or 0) > recent]
+    for a in ags[:6]:
+        s = a.get("status")
+        g, r = {"running": ("◆", "blue"), "needs_you": ("●", "attn")}.get(s, ("✓", "green"))
+        end = a.get("ended") or now
+        el = elapsed(end - (a.get("started") or end))
+        txt = fit(f"{a.get('type') or 'agent'} · {a.get('description') or ''}", width - 16)
+        out.append(f"  {paint(r, g)} {paint('text' if s in ('running', 'needs_you') else 'dim', f'{txt:<{width - 16}}')} {paint('dim', el)}")
+    for s in shs[:4]:
+        live = s.get("status") == "running"
+        el = elapsed(now - (s.get("started") or now))
+        txt = fit(s.get("command") or "", width - 16)
+        out.append(f"  {paint('blue', '$') if live else paint('green', '✓')} "
+                   f"{paint('text' if live else 'dim', f'{txt:<{width - 16}}')} {paint('dim', el)}")
     tasks = e.get("tasks") or []
     if tasks:
         done = sum(x.get("status") == "completed" for x in tasks)
         cur = next((x for x in tasks if x.get("status") == "in_progress"), None)
-        out.append("  " + paint("dim", "tasks     ") + paint("text", f"{done}/{len(tasks)}")
-                   + (paint("dim", f"  ▶ {fit(cur.get('subject'), width - 24)}") if cur else ""))
+        out.append("  " + paint("dim", "tasks ") + paint("text", f"{done}/{len(tasks)}")
+                   + (paint("dim", f"  ▶ {fit(cur.get('subject'), width - 20)}") if cur else ""))
     if out[-1] != "":
         out.append("")
+    out.append(rule)
 
-    # ── agents + shells
-    ags = e.get("agents") or []
-    if ags:
-        out.append("  " + paint("dim", "agents"))
-        for a in ags[:8]:
-            st = a.get("status")
-            r = {"running": "blue", "needs_you": "attn"}.get(st, "dim")
-            g = {"running": "◐", "needs_you": "●"}.get(st, "✓")
-            end = a.get("ended") or now
-            el = elapsed(end - (a.get("started") or end))
-            out.append(f"    {paint(r, g)} {paint('text', f"{fit(a.get('type') or '', 14):<14}")}  "
-                       f"{paint('text', fit(a.get('description') or '', width - 34))}  {paint('dim', el)}")
-    sh = [s for s in e.get("shells") or [] if s.get("status") == "running"]
-    for s in sh[:4]:
-        out.append(f"    {paint('blue', '◐')} {paint('text', fit(s.get('command') or '', width - 20))}  "
-                   f"{paint('dim', elapsed(now - (s.get('started') or now)))}")
-    if ags or sh:
-        out.append("")
-
-    # ── design + stack
+    # ── then: Implement's summary, the stack, the design
+    def field(name, text, r="dim"):
+        out.append("  " + paint("dim", f"{name:<10} ") + paint(r, fit(text, width - 15)))
+    bits = []
+    if t.get("tasks_total"):
+        bits.append(f"{t.get('tasks_done') or 0}/{t['tasks_total']} tasks")
+    if t.get("checkpoints_total"):
+        bits.append(f"{t.get('checkpoints_done') or 0}/{t['checkpoints_total']} checkpoints")
+    if t.get("checkpoint"):
+        bits.append("now: " + t["checkpoint"])
+    if bits:
+        field("IMPLEMENT", " · ".join(bits))
+    stk, why = stack_line(e)
+    if stk:
+        out.append("  " + paint("dim", f"{'STACK':<10} ") + paint({"live": "green", "starting": "yellow"}.get(stk, "dim"), stk)
+                   + paint("dim", " · " + fit(why, width - 22)))
     d = newest_design(e)
     if d:
-        out.append("  " + paint("accent", "design    ") + paint("text", fit(d.get("title") or "", width - 30))
+        out.append("  " + paint("dim", f"{'DESIGN':<10} ") + paint("accent", fit(d.get("title") or "", width - 32))
                    + paint("dim", "  v open · y copy"))
-        out.append("  " + paint("dim", "          " + fit(d["url"], width - 14)))
-    if e.get("stack"):
-        r = {"live": "green", "starting": "yellow"}.get(e["stack"], "dim")
-        hint = "  o open" if e["stack"] in ("live", "starting") else "  s s switch here"
-        out.append("  " + paint("dim", "stack     ") + paint(r, e["stack"]) + paint("dim", hint))
-    out.append("  " + paint("dim", f"pane {(e.get('tmux') or {}).get('pane') or '-'} · {e.get('model') or ''}"))
+        out.append("  " + paint("dim", " " * 11 + fit(d["url"], width - 15)))
+    out.append("  " + paint("dim", f"{'PANE':<10} {(e.get('tmux') or {}).get('pane') or '-'} · {e.get('model') or ''}"))
     print("\n".join(out))
 
 
