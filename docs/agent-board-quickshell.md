@@ -6,13 +6,15 @@ through the `board` CLI (§2); nothing reads `~/.cache/claude-board` directly.
 | file (`quickshell/.config/quickshell/`) | what it is |
 |---|---|
 | `Board.qml` | singleton: polls the CLI, exposes sessions + counts, helpers, the Ghostty border |
-| `AgentsIsland.qml` | bar island: `● N needs you  ▶ N  ◐ N  ◇ design  ts ● 1654` |
+| `AgentsIsland.qml` | bar island: a pip strip per pipeline (`▶ #246 ▮▮▯▯▯▯`), the other sessions as counts (`✓1`), `◇ design`, `ts ● 1654`; hovering a strip shows its card (a `PopupWindow`), clicking it jumps |
 | `KeysHint.qml` | the small `⊞ /` island (opens the cheatsheet) |
-| `Roster.qml`, `RosterRow.qml` | SUPER+G popup |
-| `ChecklistWall.qml`, `WallCard.qml` | SUPER+Shift+G popup |
+| `Wall.qml`, `WallCard.qml` | SUPER+G popup: the wall |
+| `Focus.qml` | SUPER+Shift+G popup: list + focus |
+| `BoardActions.qml` | what a key does to the selection (jump, answer, stack, design, open, ticket), shared by the wall and the focus view |
+| `Stepper.qml`, `Pips.qml` | the six-stage stepper (cards, focus) and the bar's pip strip |
 | `KeysCheatsheet.qml` | SUPER+/ popup (not `Keys.qml`: that name collides with QtQuick's attached `Keys`) |
 | `Toast.qml` | the one toast (its own layer-shell window, under the agents island) |
-| `Glass.qml`, `Chip.qml`, `Segs.qml`, `Kbd.qml`, `Btn.qml` | shared pieces |
+| `Glass.qml`, `Chip.qml`, `CountChip.qml`, `Kbd.qml`, `Btn.qml` | shared pieces |
 
 `Bar.qml` hosts the island, the keys hint and the three popups (same pattern as the
 dashboard: one popup at a time, the bar takes keyboard focus while one is open,
@@ -36,28 +38,60 @@ any session has a design whose `at` is under an hour old. The stack chip takes t
 branch}}`): the project's initials (`travel-smart` → `ts`), then the issue number from
 an `issue-<n>` tree, or the branch for the main checkout.
 
-Status colours (§4) are `Board.statusColor()`: needs_you red, working fg0, slow yellow
-(`current.started` older than `current.typical_ms`), background blue, unseen-done green,
-idle/stale fg2. Stage strips use `ticket.stage_index` as the stage running now (1-based,
-earlier stages done).
+Status colours (§4) are `Board.statusColor()`: needs_you attn (rust), working fg0, slow
+yellow (`current.started` older than `current.typical_ms`), background blue, unseen-done
+green, idle/stale fg2.
+
+A **pipeline** is a session whose `ticket.stage_index` is set (travel-smart or
+personal-assistant, §5's stage tables). Its six stages are `ticket.stages` (the labels),
+`stage_index` the one running now (1-based, earlier ones done), and the current one takes
+the session's state: `Board.stageClasses()` gives `done`, then `attn` / `now` / `bg` (or
+`todo` while idle on it), then `todo`, and the stepper, the focus list's segments and the
+bar's pips all draw from it. Implement's count is the checklist's tasks on travel-smart,
+the issue's checkpoints on personal-assistant (`Board.implCount()`).
+
+## The wall (SUPER+G)
+
+A card per pipeline in two columns, read top to bottom: the status chip, issue, title and
+time in its state; the problem; the stepper (Implement labelled `Impl 3/5`); then *now*:
+the stage in words (`Implement · checkpoint 3 of 5 · <name>`, `Start · asking · <title>`),
+the tool / agents / shells running, a task bar, or the question with its numbered options
+(click or 1-9). A plain session (no ticket) gets a card only while it needs you or
+finished unseen; every other one is a line under the cards (`▶ personal-assistant · main
+Bash · 3s`, `○ vault · main idle 4m`). The header counts each state. The selection is
+outlined in rust.
+
+## List + focus (SUPER+Shift+G, or f on a wall card)
+
+Left, every session: glyph, issue, title, time, then the six segments and the stage word
+(`impl 2/4`), or for a plain session what it is doing. Right, the selected one in full:
+title, problem, branch · tmux session · model; the large stepper (Implement's count and the
+current stage's time under their labels); Implement's checkpoints from `ticket.checkpoints`
+(✓ done, ▶ the one being built with its task bar: its own tasks on travel-smart, Claude's
+task list on personal-assistant, ○ ahead); running now (the tool against its typical time,
+agents and shells, the last 15 minutes' finished ones dimmed), or the question and its
+options while it asks; Claude's own task list.
 
 ## What each key runs
 
 | where | key | runs |
 |---|---|---|
-| roster | ⏎ | `board jump <key>`, then closes |
-| roster | 1-9 | `board answer <key> <n>` (only offered while that session is needs_you) |
-| roster | s | `board stack <key>` (dry run; its output is the confirmation line) |
-| roster | s again | `board stack <key> --yes` |
-| roster | v / y | `board design <key>` / `board design <key> --copy` |
-| roster | o / t | `board __open-url <key>` / `board __ticket <key>` (the CLI's roster internals, the same ones `board roster`'s fzf binds use; not in the §2 table) |
-| roster | c | opens the wall on that session |
-| roster | / ? esc | filter · cheatsheet · close (esc first cancels a pending `s`, then clears the filter) |
-| wall | h/j/k/l ⏎ ? esc | move · `board jump <key>` · cheatsheet · close |
+| wall, focus | ⏎ | `board jump <key>`, then closes |
+| wall, focus | 1-9 | `board answer <key> <n>` (only while that session is needs_you) |
+| wall, focus | s | `board stack <key>` (dry run; its output is the confirmation line) |
+| wall, focus | s again | `board stack <key> --yes` |
+| wall, focus | v / y | `board design <key>` / `board design <key> --copy` |
+| wall, focus | o / t | `board __open-url <key>` / `board __ticket <key>` (the CLI's roster internals, the same ones `board roster`'s fzf binds use; not in the §2 table) |
+| wall | h/l, j/k | move one card / one row of cards (one line among the plain sessions) |
+| wall | f | the focus view on that session |
+| focus | j/k | next / previous session |
+| focus | f | back to the wall on that session |
+| wall, focus | / ? esc | filter · cheatsheet · close (esc first cancels a pending `s`, then clears the filter) |
+| island | hover · click | that pipeline's card · `board jump <key>`; clicking the rest of the island opens the wall |
 | cheatsheet | type, ↑/↓, ⏎ | filter, pick a Hyprland bind, `hyprctl dispatch 'BINDS["<description>"]'` |
 
 The cheatsheet reads `hyprctl binds -j` (binds with a description only), `board keys
---json` (its "In the roster" group; the "Agent board" SUPER entries are dropped because
+--json` (its "On the wall" group; the "Agent board" SUPER entries are dropped because
 the live Hyprland binds cover them, `prefix+i` joins the Agents column; a built-in
 table stands in when the CLI is missing) and `tmux list-keys -N`.
 
@@ -68,12 +102,13 @@ helper, which sets the bind's `description` and also stores the dispatcher in th
 `BINDS` table under that description. Lua binds show up in `hyprctl binds -j` as
 `__lua <id>`, so the cheatsheet runs a bind with `hyprctl dispatch 'BINDS["<description>"]'`.
 The cheatsheet makes one column group per `Group`, in this order:
-Agents, In the roster, tmux, Windows, Workspaces, Apps, Shell, Notifications, Capture,
+Agents, On the wall, tmux, Windows, Workspaces, Apps, Shell, Notifications, Capture,
 Media, Session (anything else after, alphabetically). Runs like `Go to workspace 1` …
 `10` fold into one `1–0` line.
 
-New binds: `SUPER+G` → `hl.dsp.global("quickshell:roster")`, `SUPER+SHIFT+G` →
-`hl.dsp.global("quickshell:wall")`, `SUPER+slash` → `hl.dsp.global("quickshell:keys")`,
+New binds: `SUPER+G` → `hl.dsp.global("quickshell:roster")` (the wall; the shortcut kept
+the roster's name so a running Hyprland's bind still reaches it), `SUPER+SHIFT+G` →
+`hl.dsp.global("quickshell:wall")` (list + focus), `SUPER+slash` → `hl.dsp.global("quickshell:keys")`,
 `SUPER+N` → `exec board next`, and a second `SUPER+space` bind →
 `hl.dsp.global("quickshell:dismisstoast")`
 next to mako's (Hyprland runs every bind on the same combo, so both fire).
@@ -82,13 +117,13 @@ next to mako's (Hyprland runs every bind on the same combo, so both fire).
 
 `Board.needsYouEntered` fires when a session enters needs_you with a new
 `key + attention.since` (sessions already waiting when the shell starts don't toast).
-The toast shows 8 s, hides early once that session leaves needs_you, opens the roster on
-click, and SUPER+space dismisses it. Nothing else toasts.
+The toast shows 8 s, hides early once that session leaves needs_you, opens the wall on that
+session on click, and SUPER+space dismisses it. Nothing else toasts.
 
 ## Ghostty border (Hyprland 0.56)
 
 While `needs_you > 0`, every `com.mitchellh.ghostty` window gets
-`active_border_color` and `inactive_border_color` = red → accent at 45deg (re-applied
+`active_border_color` and `inactive_border_color` = attn (rust) → accent at 45deg (re-applied
 every 5 s, so new windows get it too). Two quirks of the installed Hyprland:
 
 - `setprop` is a dispatcher now. With the Lua config it is
@@ -101,7 +136,7 @@ every 5 s, so new windows get it too). Two quirks of the installed Hyprland:
   `col.inactive_border` values back. A theme switch while no one needs you therefore
   doesn't recolour Ghostty until the next needs-you cycle (or a Ghostty restart).
 
-On its first poll the shell restores once, in case an earlier instance left the border red.
+On its first poll the shell restores once, in case an earlier instance left the border rust.
 
 ## Developing against a fixture
 
