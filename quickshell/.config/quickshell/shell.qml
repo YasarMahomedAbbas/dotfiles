@@ -27,23 +27,25 @@ ShellRoot {
         id: toast
         screen: bar.screen
         rightOffset: bar.agentsRight
-        onOpenRoster: bar.toggleRoster()
+        onOpenWall: function (key) { bar.toggleWall(key) }
     }
 
     // SUPER+G registered in hyprland.lua as:
-    // bind(mainMod .. " + G", "Agents: Roster", global("quickshell:roster"))
+    // bind(mainMod .. " + G", "Agents: Wall", global("quickshell:roster"))
+    // The wall replaced the roster; the shortcut keeps its old name so a running
+    // Hyprland's bind still reaches it before the config is reloaded.
     GlobalShortcut {
         name: "roster"
-        description: "Agent board roster"
-        onPressed: bar.toggleRoster()
+        description: "Agent board wall"
+        onPressed: bar.toggleWall("")
     }
 
     // SUPER+SHIFT+G registered in hyprland.lua as:
-    // bind(mainMod .. " + SHIFT + G", "Agents: Checklist wall", global("quickshell:wall"))
+    // bind(mainMod .. " + SHIFT + G", "Agents: List + focus", global("quickshell:wall"))
     GlobalShortcut {
         name: "wall"
-        description: "Agent board checklist wall"
-        onPressed: bar.toggleWall("")
+        description: "Agent board list + focus"
+        onPressed: bar.toggleFocus("")
     }
 
     // SUPER+/ registered in hyprland.lua as:

@@ -267,9 +267,9 @@ bind(mainMod .. " + W",          "Shell: Toggle bar",      global("quickshell:to
 bind(mainMod .. " + SHIFT + W",  "Shell: Dashboard",       global("quickshell:toggledashboard"))
 bind(mainMod .. " + SHIFT + V",  "Apps: Clipboard history", exec("cliphist list | wofi --dmenu | cliphist decode | wl-copy"))
 
--- Agent board (docs/agent-board.md): quickshell roster, checklist wall, keys cheatsheet
-bind(mainMod .. " + G",          "Agents: Roster",         global("quickshell:roster"))
-bind(mainMod .. " + SHIFT + G",  "Agents: Checklist wall", global("quickshell:wall"))
+-- Agent board (docs/agent-board.md): quickshell wall, list + focus, keys cheatsheet
+bind(mainMod .. " + G",          "Agents: Wall",           global("quickshell:roster"))
+bind(mainMod .. " + SHIFT + G",  "Agents: List + focus",   global("quickshell:wall"))
 bind(mainMod .. " + slash",      "Agents: Keys cheatsheet", global("quickshell:keys"))
 bind(mainMod .. " + N",          "Agents: Jump to what needs you", exec("board next"))
 bind(mainMod .. " + down",       "Windows: Toggle split",  hl.dsp.layout("togglesplit")) -- dwindle

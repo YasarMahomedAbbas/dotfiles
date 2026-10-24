@@ -3,11 +3,11 @@ import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
 
-// The keys cheatsheet (SUPER+/, or ? in the roster and the wall), built from the
+// The keys cheatsheet (SUPER+/, or ? on the wall and in the focus view), built from the
 // live config so it can't go stale:
 //   Hyprland  `hyprctl binds -j` — only binds with a description, grouped by the
 //             "Group: what it does" prefix (see hyprland.lua's KEYBINDINGS)
-//   board     `board keys --json` — the roster's keys (built-in table as fallback)
+//   board     `board keys --json` — the wall's keys (built-in table as fallback)
 //   tmux      `tmux list-keys -N` — keys that carry a note
 // Type to filter · ↑/↓ (Tab) pick a Hyprland bind · ⏎ runs it · esc closes.
 Item {
@@ -38,7 +38,7 @@ Item {
     }
 
     // ── Sources ─────────────────────────────────────────────────────────
-    readonly property var groupOrder: ["Agents", "In the roster", "tmux", "Windows", "Workspaces",
+    readonly property var groupOrder: ["Agents", "On the wall", "tmux", "Windows", "Workspaces",
                                        "Apps", "Shell", "Notifications", "Capture", "Media", "Session"]
 
     function modKeys(mask) {
@@ -104,9 +104,9 @@ Item {
     }
 
     readonly property var boardFallback: [
-        [["j", "k"], "Move"], [["1–9"], "Answer the question"], [["⏎"], "Jump to pane"],
-        [["s", "s"], "Start the stack"], [["v", "y"], "View / copy design"],
-        [["o", "t", "c"], "localhost · ticket · checklist"], [["/"], "Filter"],
+        [["h", "j", "k", "l"], "Move"], [["1–9"], "Answer the question"], [["⏎"], "Jump to pane"],
+        [["f"], "Focus view"], [["s", "s"], "Start the stack"], [["v", "y"], "View / copy design"],
+        [["o", "t"], "localhost · ticket"], [["/"], "Filter"],
         [["?"], "All keys (here)"], [["esc"], "Close"]
     ]
     function parseBoard(text) {
@@ -122,10 +122,10 @@ Item {
                 var ks = x.keys !== undefined ? x.keys : x.key
                 if (typeof ks === "string") ks = ks.split(/\s+|(?!^)\+(?!$)/).filter(function (k) { return k.length })
                 var d = x.desc || x.description || x.action || x.does || ""
-                var g = x.group || "In the roster"
+                var g = x.group || "On the wall"
                 // SUPER binds come live from hyprctl; the rest of "Agent board"
                 // (prefix+i) joins the Agents column
-                if (g !== "In the roster") {
+                if (g !== "On the wall") {
                     if (ks && /^super$/i.test(ks[0])) continue
                     g = "Agents"
                 }
@@ -134,7 +134,7 @@ Item {
         }
         if (!out.length) out = boardFallback.map(function (f) { return { keys: f[0], desc: f[1] } })
         boardItems = out.map(function (o) {
-            return { src: "board", group: o.group || "In the roster", keys: o.keys, desc: o.desc, run: null }
+            return { src: "board", group: o.group || "On the wall", keys: o.keys, desc: o.desc, run: null }
         })
     }
 
