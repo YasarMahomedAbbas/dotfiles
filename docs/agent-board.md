@@ -103,9 +103,11 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 
 | command | does |
 |---|---|
-| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,stage,stage_index,stage_total,tasks_done,tasks_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
+| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
-| `board pill` | tmux status-right pill (prints nothing when all quiet) |
+| `board pill [#{status}]` | tmux status-right counts pill (prints nothing when all quiet); given `#{status}`, sets `status` to 2 while any session is open and back to `on` when none is |
+| `board here <session> <width>` | tmux status-left: this session's issue, title, stage and activity; `ticket-pill`'s pill when no Claude runs there |
+| `board pipelines <session> <width>` | tmux status line 2: a pill per pipeline, then the other sessions as counts |
 | `board roster` | fzf roster popup (tmux `prefix+i`); same keys as the quickshell roster |
 | `board jump <key>` | focus Ghostty (`hyprctl dispatch 'hl.dsp.focus({ window = "class:com.mitchellh.ghostty" })'`), `tmux switch-client` + select window/pane, mark seen |
 | `board next` | jump to the oldest `needs_you` session (SUPER+N) |
@@ -130,7 +132,8 @@ Unseen: `finished_at` newer than `~/.cache/claude-board/seen/<key>` (touched by 
 
 ## 4. Colours (status semantics, all themes)
 
-Read from `~/.config/theme/quickshell-colors.json` / `sesh-colors.sh`: needs_you = `red`,
+Read from `~/.config/theme/quickshell-colors.json` / `sesh-colors.sh`: needs_you = `attn`
+(rust `#e0703a` in every palette, `SESH_ATTN_COLOR`; it used to be `red`),
 working = `fg0` (frost), background = `blue` (steel `#8fa8c8` in ember), done/idle
 finished = `green`, slow (past typical) = `yellow`, design = `accent`.
 
@@ -142,8 +145,10 @@ the agent sidebar are gone).
 
 | surface | source | shows |
 |---|---|---|
-| tmux status-right | `#(board pill)` in `themes/templates/tmux.conf.tmpl` | `● 2 needs you` (red pill), `▶ 1 ◐ 3` (fg0 / blue; ▶ yellow when a turn runs past typical). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
-| `prefix+i` | `board roster` in a `display-popup -E -w 90% -h 80%` | fzf roster: glyph, ticket, problem, what it is doing, stack chip; preview = question + options, stage strip, checklist summary, agents with elapsed, design link. Opens with input hidden so letters are keys; `/` shows the filter, `esc` leaves it (or closes). Reloads every 3 s |
+| tmux status line 1, left | `#(board here #{session_name} #{client_width})` in `themes/templates/tmux.conf.tmpl` | after the session pill: `#1964 Invoice discount control · Verify · agent 5m` (issue dim, title, then stage and activity in the state's colour); with no Claude in the session, the ticket pill. Drops out on a narrow client |
+| tmux status line 1, right | `#(board pill #{status})` | `● 1 ▶ 1 ◐ 1 ✓ 1` in one pill (needs you rust, working fg0 or yellow past typical, background blue, unseen green). Prints itself, caps included, or nothing. Under Hyprland the host and clock pills are dropped (quickshell shows them) |
+| tmux status line 2 | `status-format[1]`: `#(board pipelines #{session_name} #{client_width})`; on only while a Claude session is open | a pill per pipeline, most urgent first: glyph, `#n`, six cells (✓ done, ! needs you, ▶ working, ◐ background, ○ idle or ahead) and the stage word (`impl 3/5`: tasks on travel-smart, checkpoints on personal-assistant). A needs-you pill sits on a rust tint; this session's is outlined in rust (thin caps, over- and underline). Then `+ other sessions ✓ 1 ○ 2`; pills that don't fit fold into it. `status-interval` is 5 s. Times are elapsed only |
+| `prefix+i` | `board roster` in a `display-popup -E -w 90% -h 80%` | fzf roster. A pipeline's row: glyph and `#n` in the state's colour, the six-cell strip, the problem, time in its state, stack chip; a plain session's: `session · branch` and what it is doing (`Bash 3s`, `unseen 5m`, `idle 4m`). Preview in three bands: **what** (issue, title, project, the problem), a text stepper (● done, ◉ now, ○ ahead, with the stage labels, Implement's count and the current stage's elapsed time); **now** (the stage, the question with its options, the tool in flight, agents and shells running or finished in the last 15 min, Claude's tasks); then Implement's summary (tasks, checkpoints, the one being built), the stack, the design link and the pane. Opens with input hidden so letters are keys; `/` shows the filter, `esc` leaves it (or closes). Reloads every 3 s |
 | `pane-focus-in` hook | `board seen #{pane_id}` | focusing a pane clears its `✓ unseen`; `board list` also treats a pane some client is looking at as seen |
 | sesh picker (`prefix+s`) | `sesh-list-bells` (one `board list --json` per render) | status column `● needs you · <title>` / `▶ <detail> <elapsed>[ slow]` / `◐ background · N agents` / `✓ unseen` / nothing when idle |
 | picker preview | `sesh-preview` | banner from the board, the question and its options, then the ticket card from `ticket-context` and the pane tail of the board's pane |
@@ -155,10 +160,27 @@ Colours come from `~/.config/theme/sesh-colors.sh`, which gained `SESH_FG0_COLOR
 
 **Still from the old status machinery, unchanged:**
 
-- `ticket-context <dir|session>` resolves where a frontend-pipeline worktree stands (branch,
-  slug, issue, title, `problem`, stage from the NOTES stage log, checklist progress). It
-  is what `board` enriches `ticket` from. `problem` is the one line saying what is wrong:
-  the checklist's `Problem:` line, else the `Issue:` line's title, else `title`.
+- `ticket-context <dir|session>` resolves where a pipeline worktree stands (branch,
+  `pipeline`, slug, issue, title, `problem`, stage from the stage log, the six
+  `stage_labels`, checklist and checkpoint progress). It is what `board` enriches `ticket`
+  from. Two stage tables:
+
+  | stage_index | travel-smart (`frontend`) | personal-assistant (`pa`) |
+  |---|---|---|
+  | 1 | Start · `start-ticket`: no ticket folder/checklist | Refine · `refine-issue`: the issue has no `## Checkpoints` |
+  | 2 | Implement · `implement-plan`: NOTES has no `## Implementation` | Implement · `implement-plan`: a checkpoint unticked, or no `## Implementation` |
+  | 3 | Review · `review` | Review · `self-review` |
+  | 4 | Docs · `doc-drift` | Docs · `doc-drift` |
+  | 5 | Verify · `human-verification` | Verify · `self-verify` (`## Self verification`) |
+  | 6 | PR · `raise-pr` | PR · `raise-pr` |
+
+  travel-smart reads `Docs/Frontend/tasks/<slug>/` (`<type>/frontend/<slug>` branches);
+  personal-assistant reads `docs/tasks/<n>-<slug>/NOTES.md` in a `pa-<n>` worktree or on an
+  `<n>-<slug>` branch, and the issue (title, the Goal's first sentence as `problem`, the
+  `## Checkpoints` boxes) through `gh`, cached 60 s per issue under
+  `~/.cache/ticket-context/` and refreshed in the background. For travel-smart, `problem`
+  is the checklist's `Problem:` line, else the `Issue:` line's title, else `title`; a
+  checkpoint counts as done once every task under its `## Checkpoint` heading is ticked.
 - `pipeline-status <running|blocked|done> <label>` stamps `@pipeline_state` /
   `@pipeline_label`. It no longer renames windows; `board` uses the label as the stage
   when `ticket-context` has none.

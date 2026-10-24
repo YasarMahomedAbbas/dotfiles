@@ -8,7 +8,11 @@ them, drops stale ones, enriches each and acts on them.
 
   board list [--json]            sessions, needs_you > working > background > unseen > idle
   board summary [--json]         counts + the live stack per project
-  board pill                     tmux status-right pill (nothing when all quiet)
+  board pill [#{status}]         tmux status-right counts pill (nothing when all quiet);
+                                 with #{status}, keeps the second line on while any
+                                 session is open
+  board here <session> <width>   tmux status-left: this session's issue, stage, activity
+  board pipelines <session> <width>  tmux status line 2: a pill per pipeline
   board roster                   fzf roster (tmux prefix+i)
   board jump <key>               focus Ghostty, switch the tmux client to that pane, mark seen
   board next                     jump to the oldest needs_you session
@@ -34,11 +38,15 @@ state files exactly as the mod wrote them, each with these fields added:
                   | "off" (another tree of the project owns it, or nothing runs), or
                   null when the worktree is not a wt-dev project
   ticket   obj    null when nothing is known, else
-                  {issue, title, problem, stage, stage_index, stage_total, tasks_done,
-                   tasks_total, checkpoint, slug} — any field may be null. From
-                  `ticket-context <cwd>` (cached 30 s per cwd); `issue` falls back to a
-                  tmux session named `issue-<n>`; `stage` falls back to the session's
+                  {issue, title, problem, pipeline, stage, stage_index, stage_total,
+                   stages, tasks_done, tasks_total, checkpoints_done, checkpoints_total,
+                   checkpoint, slug} — any field may be null. From `ticket-context <cwd>`
+                  (cached 30 s per cwd); `issue` falls back to a tmux session named
+                  `issue-<n>` or `pa-<n>`; `stage` falls back to the session's
                   @pipeline_label (set by pipeline-status) when ticket-context has none.
+                  `pipeline` is "frontend" (travel-smart) or "pa" (personal-assistant);
+                  `stages` the six short labels of its stage table (["Refine",
+                  "Implement", …]), `stage_index` counting from 1 into them.
 
 `board summary --json`:
   {"needs_you": n, "working": n, "background": n, "unseen": n,
@@ -46,7 +54,7 @@ state files exactly as the mod wrote them, each with these fields added:
    "stacks": {"<project>": {"state": "live|starting|failed|stopped",
                             "tree": "<worktree name>|null", "branch": "...|null"}}}
 
-Caches live in $BOARD_DIR/cache/: ticket-context per cwd (30 s), `wt-dev status
+Caches live in $BOARD_DIR/cache/: ticket-context per cwd (30 s, `ctx<schema>-*`), `wt-dev status
 --short` (5 s), the roster's mode. Python 3 stdlib only.
 """
 
@@ -67,6 +75,10 @@ SEEN = BOARD_DIR / "seen"
 STALE_MS = 30_000
 REAP_MS = 10 * 60_000
 TICKET_TTL = 30
+# Bumped whenever ticket-context's keys change: the per-cwd cache is shared by every
+# board on the machine, and an older board (or ticket-context) must not serve a newer
+# one its output for the 30 s it is fresh.
+CTX_SCHEMA = 2
 STACK_TTL = 5
 STATES = ("needs_you", "working", "background", "idle")
 GHOSTTY_CLASS = "com.mitchellh.ghostty"
@@ -167,6 +179,9 @@ def theme():
     fz = lambda k, d: fzf.get(k, d).lstrip("#")  # noqa: E731
     return {
         "red": vals.get("SESH_BELL_COLOR", "bf616a"),
+        # needs you is rust (attn) in every theme; before the next theme-switch the
+        # file has no SESH_ATTN_COLOR, so the rust is the fallback, never red.
+        "attn": vals.get("SESH_ATTN_COLOR", "e0703a"),
         "yellow": vals.get("SESH_BUSY_COLOR", "ebcb8b"),
         "green": vals.get("SESH_OK_COLOR", "a3be8c"),
         "dim": vals.get("SESH_DIM_COLOR", "6c7a96"),
@@ -304,7 +319,7 @@ def worktree_ctx(cwd):
                 ctx["project"] = wt_project(ctx["main"])
         ctx["remote"] = (run(["git", "-C", cwd, "remote", "get-url", "origin"]) or "").strip() or None
         return ctx
-    return cached("ctx-" + hashlib.sha1((cwd or "").encode()).hexdigest()[:16] + ".json", TICKET_TTL, produce)
+    return cached(f"ctx{CTX_SCHEMA}-" + hashlib.sha1((cwd or "").encode()).hexdigest()[:16] + ".json", TICKET_TTL, produce)
 
 
 def _int(v):
@@ -319,20 +334,24 @@ def build_ticket(e, ctx, sessions):
     sess = (e.get("tmux") or {}).get("session") or ""
     issue = _int(tc.get("issue"))
     if issue is None:
-        m = re.fullmatch(r"issue-(\d+)", sess)
+        m = re.fullmatch(r"(?:issue|pa)-(\d+)", sess)
         issue = int(m.group(1)) if m else None
-    on_ticket = bool(tc.get("slug")) or issue is not None
+    on_ticket = bool(tc.get("slug") or tc.get("pipeline")) or issue is not None
     t = {
         "issue": issue,
         "title": tc.get("title") or None,
         "problem": tc.get("problem") or None,
+        "pipeline": tc.get("pipeline") if on_ticket else None,
         # ticket-context reports stage 1 for ANY git dir with no ticket folder, so its
         # stage only means something on a ticket.
         "stage": tc.get("stage") if on_ticket else None,
         "stage_index": _int(tc.get("stage_index")) if on_ticket else None,
         "stage_total": _int(tc.get("stage_total")) if on_ticket else None,
+        "stages": (tc.get("stage_labels") or "").split(",") if on_ticket and tc.get("stage_labels") else None,
         "tasks_done": _int(tc.get("tasks_done")),
         "tasks_total": _int(tc.get("tasks_total")),
+        "checkpoints_done": _int(tc.get("checkpoints_done")),
+        "checkpoints_total": _int(tc.get("checkpoints_total")),
         "checkpoint": tc.get("checkpoint") or None,
         "slug": tc.get("slug") or None,
     }
@@ -357,9 +376,10 @@ def stack_state(ctx, wt):
 
 
 # ── loading ──────────────────────────────────────────────────────────────────────
-def load(enrich=True):
+def load(enrich=True, stacks=True):
     """Every live state file, enriched and sorted. Each entry carries a private
-    `_ctx` (worktree context) that is stripped before JSON output."""
+    `_ctx` (worktree context) that is stripped before JSON output. `stacks=False`
+    skips `wt-dev status` (the status line has no use for it); `stack` is then None."""
     now = now_ms()
     entries = []
     for f in sorted(BOARD_DIR.glob("*.json")):
@@ -385,7 +405,7 @@ def load(enrich=True):
 
     sessions = tmux_sessions() if entries else {}
     focused = focused_panes() if entries else set()
-    wt = wt_status() if (entries and enrich) else {}
+    wt = wt_status() if (entries and enrich and stacks) else {}
     for e in entries:
         # Unseen: finished after the last time anyone looked. A pane a client is
         # looking at right now counts as looked at.
@@ -484,7 +504,7 @@ def doing(e, now=None):
     return "unseen" if e.get("unseen") else "idle"
 
 
-GLYPH = {"needs_you": "●", "working": "▶", "background": "◐", "unseen": "✓", "idle": "·", "stale": "○"}
+GLYPH = {"needs_you": "●", "working": "▶", "background": "◐", "unseen": "✓", "idle": "○", "stale": "○"}
 
 
 def status_role(e):
@@ -492,7 +512,7 @@ def status_role(e):
         return "dim", "stale"
     st = e["state"]
     if st == "needs_you":
-        return "red", st
+        return "attn", st
     if st == "working":
         return ("yellow" if is_slow(e) else "fg0"), st
     if st == "background":
@@ -512,6 +532,93 @@ def label_for(e):
 def brief_for(e):
     t = e.get("ticket") or {}
     return t.get("problem") or t.get("title") or e.get("branch") or os.path.basename(e.get("cwd") or "")
+
+
+# ── where a pipeline is: its six stages ─────────────────────────────────────────
+DEFAULT_STAGES = ["Start", "Implement", "Review", "Docs", "Verify", "PR"]
+
+
+def on_pipeline(e):
+    t = e.get("ticket") or {}
+    return bool(t.get("stage_index"))
+
+
+def stage_labels(e):
+    t = e.get("ticket") or {}
+    labels = t.get("stages") or []
+    return labels if len(labels) == 6 else DEFAULT_STAGES
+
+
+def impl_count(t):
+    """Implement's count: the checklist's tasks (travel-smart), else the issue's
+    checkpoints (personal-assistant); "" when neither is known."""
+    if t.get("tasks_total"):
+        return f"{t.get('tasks_done') or 0}/{t['tasks_total']}"
+    if t.get("checkpoints_total"):
+        return f"{t.get('checkpoints_done') or 0}/{t['checkpoints_total']}"
+    return ""
+
+
+def stage_label(e):
+    """The current stage's label ("Verify"), or the raw stage word off the table."""
+    t = e.get("ticket") or {}
+    i = t.get("stage_index")
+    if i and 1 <= i <= 6:
+        return stage_labels(e)[i - 1]
+    return t.get("stage") or ""
+
+
+def stage_word(e):
+    """The short word under a pill: `verify`, `impl 3/5`."""
+    t = e.get("ticket") or {}
+    if t.get("stage_index") == 2:
+        n = impl_count(t)
+        return "impl" + (f" {n}" if n else "")
+    return stage_label(e).lower()
+
+
+def strip_cells(e):
+    """Six (glyph, role) cells: done ✓, the current one by state (! needs you,
+    ▶ working, ◐ background, ○ idle), then ○ still ahead."""
+    idx = (e.get("ticket") or {}).get("stage_index") or 0
+    role, st = status_role(e)
+    now_glyph = {"needs_you": "!", "working": "▶", "background": "◐"}.get(st, "○")
+    now_role = role if st in ("needs_you", "working", "background") else "text"
+    cells = []
+    for i in range(1, 7):
+        if i < idx:
+            cells.append(("✓", "green"))
+        elif i == idx:
+            cells.append((now_glyph, now_role))
+        else:
+            cells.append(("○", "dim"))
+    return cells
+
+
+def activity(e, now=None):
+    """What is running, in two or three words with its elapsed time: `agent 5m`,
+    `Bash 12s`, `needs you · Results`."""
+    now = now or now_ms()
+    st = e["state"]
+    if e.get("stale"):
+        return "stale"
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        return "needs you · " + (a.get("title") or a.get("kind") or "?")
+    if st == "working":
+        cur = e.get("current") or {}
+        return f"{cur.get('tool') or 'working'} {elapsed(now - (cur.get('started') or e.get('since') or now))}"
+    if st == "background":
+        for kind, word in (("agents", "agent"), ("shells", "shell")):
+            r = running(e, kind)
+            if r:
+                first = min(x.get("started") or now for x in r)
+                more = f" +{len(r) - 1}" if len(r) > 1 else ""
+                return f"{word}{more} {elapsed(now - first)}"
+        return "background"
+    if e.get("unseen"):
+        return f"unseen {elapsed(now - (e.get('finished_at') or e.get('since') or now))}"
+    return f"idle {elapsed(now - (e.get('since') or now))}"
 
 
 def fit(s, n):
@@ -567,29 +674,167 @@ def cmd_summary(args):
         print(f"  {p:<16} {st['state']}{tail}")
 
 
-def cmd_pill(_args):
-    """`● N needs you` on red, then `▶ N ◐ N` in a grey pill; nothing when all quiet.
-    Printed whole (caps included) for the same reason as `wt-dev tmux`: an empty pill
-    still renders as a blob and tmux cannot branch on a #()'s output."""
+# ── tmux status line ─────────────────────────────────────────────────────────────
+# Each command prints its pill(s) whole, caps included, or nothing: an empty pill
+# still renders as a blob and tmux cannot branch on a #()'s output. tmux re-reads
+# `#[…]` in the output, so text from a state file goes through tesc().
+CAP_O, CAP_C = "\ue0b6", "\ue0b4"            # round caps
+THIN_O, THIN_C = "\ue0b7", "\ue0b5"          # thin (outline) round caps
+
+
+def tesc(s):
+    return (s or "").replace("#", "##")
+
+
+def blend(fg, bg, a):
+    """`fg` at opacity `a` over `bg`, as hex: tmux has no alpha."""
+    f = [int(fg[i:i + 2], 16) for i in (0, 2, 4)]
+    b = [int(bg[i:i + 2], 16) for i in (0, 2, 4)]
+    return "".join(f"{round(x * a + y * (1 - a)):02x}" for x, y in zip(f, b))
+
+
+def tmux_role(t, e):
+    role, _st = status_role(e)
+    return t[role] if role in t else t["text"]
+
+
+def status_lines(want_two, current):
+    """Two status lines while any Claude session is open, one otherwise. The pill job
+    passes `#{status}` in, so this only touches tmux when the answer changes."""
+    if current and (current == "2") != want_two:
+        run(["tmux", "set-option", "-g", "status", "2" if want_two else "on"], timeout=2)
+
+
+def cmd_pill(args):
+    """Status line 1, right: the counts `● N ▶ N ◐ N ✓ N` (needs you in rust, working
+    frost or yellow once slow, background steel, unseen green) in one pill; nothing
+    when all quiet. `board pill #{status}` also keeps the second line on while any
+    session is open (see status_lines)."""
     entries = [e for e in load(enrich=False) if not e.get("stale")]
+    if args:
+        status_lines(bool(entries), args[0])
     need = sum(e["state"] == "needs_you" for e in entries)
     work = [e for e in entries if e["state"] == "working"]
     bg = sum(e["state"] == "background" for e in entries)
+    unseen = sum(bool(e.get("unseen")) for e in entries)
     t = theme()
-    o, c = "", ""
-    out = ""
+    inner = []
     if need:
-        out += (f"#[fg=#{t['red']},bg=default]{o}#[bg=#{t['red']},fg=#{t['bg0']},bold] ● {need} needs you "
-                f"#[fg=#{t['red']},bg=default,nobold]{c}#[bg=default] ")
-    if work or bg:
-        inner = ""
-        if work:
-            fg = t["yellow"] if any(is_slow(e) for e in work) else t["fg0"]
-            inner += f"#[fg=#{fg}] ▶ {len(work)}"
-        if bg:
-            inner += f"#[fg=#{t['blue']}] ◐ {bg}"
-        out += f"#[fg=#{t['pill']},bg=default]{o}#[bg=#{t['pill']}]{inner} #[fg=#{t['pill']},bg=default]{c}#[bg=default] "
-    sys.stdout.write(out)
+        inner.append(f"#[fg=#{t['attn']},bold]● {need}#[nobold]")
+    if work:
+        inner.append(f"#[fg=#{t['yellow'] if any(is_slow(e) for e in work) else t['fg0']}]▶ {len(work)}")
+    if bg:
+        inner.append(f"#[fg=#{t['blue']}]◐ {bg}")
+    if unseen:
+        inner.append(f"#[fg=#{t['green']}]✓ {unseen}")
+    if not inner:
+        return
+    sys.stdout.write(f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] {' '.join(inner)} "
+                     f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+
+
+def cmd_here(args):
+    """Status line 1, left: this tmux session's Claude — `#1964 Invoice discount
+    control · Verify · agent 5m` — or, with no Claude in it, `ticket-pill`'s pill.
+
+      board here <session> <client_width>"""
+    sess = args[0] if args else ""
+    try:
+        width = int(args[1]) if len(args) > 1 else 200
+    except ValueError:
+        width = 200
+    mine = [e for e in load(stacks=False) if (e.get("tmux") or {}).get("session") == sess and not e.get("stale")]
+    if not mine:
+        if shutil.which("ticket-pill"):
+            sys.stdout.write(run(["ticket-pill", sess, str(width)], timeout=4) or "")
+        return
+    e = mine[0]                            # load() sorts the most urgent first
+    t, tk = theme(), e.get("ticket") or {}
+    # Same budget as ticket-pill: the session pill, the centred window list and the
+    # right side come out of the width first; below the floor the pill drops out.
+    budget = min(width - 108, 76)
+    if budget < 24:
+        return
+    tail = " · ".join(x for x in (stage_label(e) if on_pipeline(e) else "", activity(e)) if x)
+    num = f"#{tk['issue']} " if tk.get("issue") else ""
+    name = tk.get("title") or tk.get("problem") or e.get("branch") or os.path.basename(e.get("cwd") or "")
+    room = budget - len(num) - len(tail) - 3
+    if room < 8:
+        name, room = "", 0
+    text = fit(name, room) if room else ""
+    sys.stdout.write(
+        f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] "
+        + (f"#[fg=#{t['dim']}]{tesc(num)}" if num else "")
+        + (f"#[fg=#{t['text']}]{tesc(text)} " if text else "")
+        + f"#[fg=#{tmux_role(t, e)}]{'· ' if text or num else ''}{tesc(tail)} "
+        + f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+
+
+def pipeline_pill(e, t, this):
+    """`● #2021 !○○○○○ start`: glyph, number, the six-cell strip, the stage word.
+    Needs-you pills sit on a rust tint; this session's is outlined in rust."""
+    role, st = status_role(e)
+    fg = tmux_role(t, e)
+    bg = blend(t["attn"], t["bg0"], 0.16) if st == "needs_you" else t["pill"]
+    num = (e.get("ticket") or {}).get("issue")
+    strip = "".join(f"#[fg=#{t[r]}]{g}" for g, r in strip_cells(e))
+    body = (f"#[fg=#{fg}]{GLYPH[st]} #[fg=#{t['text']}]##{num} {strip} #[fg=#{fg}]{tesc(stage_word(e))}")
+    vis = 2 + len(f"#{num}") + 1 + 6 + 1 + len(stage_word(e)) + 4
+    if this:
+        a = t["attn"]
+        pill = (f"#[fg=#{a},bg=default]{THIN_O}#[bg=#{bg},overline,underscore,us=#{a}] {body} "
+                f"#[fg=#{a},bg=default,nooverline,nounderscore,us=default]{THIN_C}#[bg=default]")
+    else:
+        pill = f"#[fg=#{bg},bg=default]{CAP_O}#[bg=#{bg}] {body} #[fg=#{bg},bg=default]{CAP_C}#[bg=default]"
+    return pill, vis
+
+
+def cmd_pipelines(args):
+    """Status line 2: a pill per pipeline (a session with a ticket on a stage table),
+    most urgent first, this session's outlined, then the other sessions as counts.
+    Pills that do not fit the width are folded into the count.
+
+      board pipelines <session> <client_width>"""
+    sess = args[0] if args else ""
+    try:
+        width = int(args[1]) if len(args) > 1 else 200
+    except ValueError:
+        width = 200
+    entries = [e for e in load(stacks=False) if not e.get("stale")]
+    if not entries:
+        return
+    t = theme()
+    pipes = [e for e in entries if on_pipeline(e)]
+    others = [e for e in entries if not on_pipeline(e)]
+    pills = [(e, *pipeline_pill(e, t, (e.get("tmux") or {}).get("session") == sess)) for e in pipes]
+
+    def rest_pill(rest):
+        if not rest:
+            return "", 0
+        counts = {}
+        for e in rest:
+            _r, st = status_role(e)
+            counts[st] = counts.get(st, 0) + 1
+        order = [("needs_you", "attn"), ("working", "fg0"), ("background", "blue"), ("unseen", "green"), ("idle", "dim")]
+        parts = [f"#[fg=#{t[r]}]{GLYPH[s] if s != 'idle' else '○'} {counts[s]}" for s, r in order if counts.get(s)]
+        label = "+ other sessions" if pipes else "sessions"
+        txt = f"#[fg=#{t['dim']}]{label} " + " ".join(parts)
+        vis = len(label) + 1 + sum(len(str(counts[s])) + 3 for s, _ in order if counts.get(s)) + 4
+        return f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] {txt} #[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default]", vis
+
+    # Drop from the end (least urgent) until it fits, never this session's pill.
+    shown, folded = list(pills), []
+    while True:
+        rp, rvis = rest_pill(others + folded)
+        used = sum(v + 1 for _e, _p, v in shown) + rvis
+        if used <= width or not shown:
+            break
+        drop = next((i for i in range(len(shown) - 1, -1, -1)
+                     if (shown[i][0].get("tmux") or {}).get("session") != sess), None)
+        if drop is None:
+            break
+        folded.insert(0, shown.pop(drop)[0])
+    sys.stdout.write(" ".join(p for _e, p, _v in shown) + (" " if shown and rp else "") + rp)
 
 
 def tmux_client():
@@ -788,15 +1033,108 @@ def set_mode(mode, key=""):
         pass
 
 
+def roster_row(e, paint, width):
+    """`● #2021 !○○○○○ Agency feature switches…  2m` for a pipeline; a plain session
+    is `✓ travelsmart · develop   unseen 5m`. Glyph and number in the state's colour."""
+    role, st = status_role(e)
+    now = now_ms()
+    when = elapsed(now - (e.get("since") or now))
+    chip = {"live": paint("green", " ● stack"), "starting": paint("yellow", " ◐ stack")}.get(e.get("stack"), "")
+    chip_w = 8 if chip else 0
+    if on_pipeline(e):
+        num = fit(label_for(e), 6)
+        strip = "".join(paint(r, g) for g, r in strip_cells(e))
+        room = max(10, width - 2 - 7 - 7 - 1 - len(when) - chip_w)
+        return (f"{paint(role, GLYPH[st] + ' ' + f'{num:<6}', bold=st != 'idle')} {strip} "
+                f"{paint('text', f'{fit(brief_for(e), room):<{room}}')} {paint('dim', when)}{chip}")
+    sess = (e.get("tmux") or {}).get("session") or os.path.basename(e.get("cwd") or "") or e["key"]
+    name = f"{sess} · {e['branch']}" if e.get("branch") else sess
+    tail = activity(e, now) + (" slow" if is_slow(e, now) else "")
+    room = max(10, width - 2 - len(tail) - 2 - chip_w)
+    dim = st in ("idle", "stale")
+    return (f"{paint(role, GLYPH[st])} {paint('dim' if dim else 'text', f'{fit(name, room):<{room}}')}  "
+            f"{paint(role if not dim else 'dim', tail)}{chip}")
+
+
 def roster_rows():
     paint = Paint(True)
+    cols = int(os.environ.get("FZF_COLUMNS") or 0) or shutil.get_terminal_size((160, 40)).columns
+    width = max(40, cols // 2 - 4)          # the list is the left half (preview right:50%)
     for e in load():
-        print(f"{e['key']}\t{row(e, paint)}")
+        print(f"{e['key']}\t{roster_row(e, paint, width)}")
 
 
 def wrap(text, width, indent="  "):
     import textwrap
     return [indent + ln for ln in textwrap.wrap(text or "", max(20, width - len(indent))) or [""]]
+
+
+def stepper(e, paint, width):
+    """The text stepper: six nodes on a line (● done, ◉ now in the state's colour,
+    ○ ahead), green ━ up to the current stage, then the labels and, under Implement,
+    its count, under the current stage its elapsed time.
+
+        ●━━━━━━━●━━━━━━━●━━━━━━━◉───────○───────○
+      Start  Implement Review   Docs   Verify    PR
+               17/17                    5m
+    """
+    t = e.get("ticket") or {}
+    idx = t.get("stage_index") or 0
+    labels = stage_labels(e)
+    role, st = status_role(e)
+    now_role = role if st in ("needs_you", "working", "background") else "text"
+    left = 4
+    gap = max(6, (width - left - 4) // 5)
+    pos = [left + i * gap for i in range(6)]
+    line = ""
+    for i in range(6):
+        n = i + 1
+        node = paint("green", "●") if n < idx else paint(now_role, "◉", bold=True) if n == idx else paint("dim", "○")
+        if i:
+            seg = ("━" if n <= idx else "─") * (gap - 1)
+            line += paint("green" if n <= idx else "dim", seg)
+        line += node
+    out = [" " * left + line]
+
+    def under(texts):
+        """One line with each (text, role) centred under its node, never overlapping."""
+        s, col = "", 0
+        for i, (txt, r, bold) in enumerate(texts):
+            if not txt:
+                continue
+            at = max(col, pos[i] - len(txt) // 2, 0)
+            s += " " * (at - col) + paint(r, txt, bold=bold)
+            col = at + len(txt) + 1
+            s += " "
+        return s.rstrip()
+
+    lab = []
+    for i, l in enumerate(labels):
+        n = i + 1
+        lab.append((l, now_role if n == idx else "text" if n < idx else "dim", n == idx))
+    out.append(under(lab))
+    subs = [("", "dim", False)] * 6
+    if impl_count(t):
+        subs[1] = (impl_count(t), "dim", False)
+    if 1 <= idx <= 6 and idx != 2:
+        subs[idx - 1] = (elapsed(now_ms() - (e.get("since") or now_ms())), "dim", False)
+    if any(s[0] for s in subs):
+        out.append(under(subs))
+    return out
+
+
+def stack_line(e):
+    """`live · o open`, `off · issue-1654 owns travel-smart`, …"""
+    st = e.get("stack")
+    if not st:
+        return None, None
+    if st in ("live", "starting"):
+        return st, "o open"
+    proj = (e.get("_ctx") or {}).get("project")
+    s = wt_status().get(proj or "", {})
+    owner = (f"live on {s['tree']}" if s.get("tree") and s.get("state") in ("live", "starting")
+             else f"{proj} is {s.get('state') or 'stopped'}")
+    return st, f"{owner} · s s switch here"
 
 
 def preview(key):
@@ -813,18 +1151,29 @@ def preview(key):
         set_mode("")
         mode = ""
     now = now_ms()
-    role, _st = status_role(e)
+    role, st = status_role(e)
     t = e.get("ticket") or {}
+    ctx = e.get("_ctx") or {}
+    rule = "  " + paint("dim", "─" * max(10, width - 4))
+
+    # ── what: the issue, its title, the problem
     out = []
-    head = paint("accent", label_for(e), bold=True)
-    sess = (e.get("tmux") or {}).get("session")
-    if sess and t.get("issue"):
-        head += "  " + paint("dim", sess)
-    out.append(f"  {head}   {paint(role, doing(e, now))}")
-    if brief_for(e):
-        out += [paint("text", ln) for ln in wrap(brief_for(e), width)]
-    if e.get("branch") and e["branch"] != brief_for(e):
-        out.append("  " + paint("dim", e["branch"]))
+    sess = (e.get("tmux") or {}).get("session") or ""
+    where = ctx.get("project") or os.path.basename(ctx.get("main") or "") or sess
+    if t.get("issue"):
+        head = paint("text", f"#{t['issue']}") + " " + paint("fg0", fit(t.get("title") or brief_for(e), width - 12 - len(where)), bold=True)
+        headw = len(f"#{t['issue']} ") + len(fit(t.get("title") or brief_for(e), width - 12 - len(where)))
+    else:
+        name = f"{sess} · {e['branch']}" if sess and e.get("branch") else sess or e.get("branch") or e["key"]
+        head = paint("fg0", fit(name, width - 12 - len(where)), bold=True)
+        headw = len(fit(name, width - 12 - len(where)))
+    pad = max(2, width - 4 - headw - len(where))
+    out.append("  " + head + " " * pad + paint("dim", where))
+    problem = t.get("problem")
+    if problem and problem != t.get("title"):
+        out += [paint("text", ln) for ln in wrap(problem, width)]
+    elif not t.get("issue") and e.get("cwd"):
+        out.append("  " + paint("dim", fit(e["cwd"].replace(str(Path.home()), "~"), width - 4)))
     out.append("")
 
     if mode == "keys":
@@ -852,80 +1201,84 @@ def preview(key):
         print("\n".join(out))
         return
 
-    # ── the question
-    if e["state"] == "needs_you":
-        a = e.get("attention") or {}
-        out.append(paint("red", f"  {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
-        out += [paint("text", ln) for ln in wrap(a.get("text") or "", width)]
-        for o in a.get("options") or []:
-            out.append(f"    {paint('red', o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+    # ── where: the stepper
+    if on_pipeline(e):
+        out += stepper(e, paint, width)
         out.append("")
-    elif e["state"] == "working" and e.get("current"):
+    out.append(rule)
+
+    # ── now: the stage in words, then what is running, or the question
+    stage = stage_label(e) if on_pipeline(e) else ""
+    nowtxt = {"needs_you": "waiting on you", "working": "", "background": "agents and shells running",
+              "unseen": "finished · not looked at yet", "idle": "idle", "stale": "gone quiet"}.get(st, "")
+    if st == "working":
+        cur = e.get("current") or {}
+        nowtxt = cur.get("tool") or "working"
+    head = paint(role, "NOW", bold=True) + "  " + (paint("fg0", stage, bold=True) + paint("text", " · ") if stage else "")
+    out.append("  " + head + paint("text", fit(nowtxt, width - 12 - len(stage))))
+    out.append("")
+    if st == "needs_you":
+        a = e.get("attention") or {}
+        out.append(paint("attn", f"  ? {a.get('kind', 'question')} · {a.get('title') or ''}", bold=True))
+        out += [paint("text", ln) for ln in wrap(a.get("text") or "", width, "    ")]
+        for o in a.get("options") or []:
+            out.append(f"    {paint('attn', o.get('key', '?'), bold=True)}  {paint('text', o.get('label', ''))}")
+        out.append("")
+    elif st == "working" and e.get("current"):
         cur = e["current"]
         el = elapsed(now - (cur.get("started") or now))
         typ = f" · typical {elapsed(cur['typical_ms'])}" if cur.get("typical_ms") else ""
-        out.append("  " + paint(role, f"▶ {cur.get('tool', '')}  {cur.get('detail') or ''}") + paint("dim", f"  {el}{typ}"))
-        out.append("")
-
-    # ── stage strip + checklist summary
-    if t.get("stage_index"):
-        strip = []
-        for i, s in enumerate(["plan", "build", "review", "docs", "verify", "PR"], 1):
-            if i < t["stage_index"]:
-                strip.append(paint("green", f"✓ {s}"))
-            elif i == t["stage_index"]:
-                strip.append(paint("yellow", f"▶ {s}"))
-            else:
-                strip.append(paint("dim", f"· {s}"))
-        out.append("  " + paint("dim", "pipeline  ") + "  ".join(strip))
-    elif t.get("stage"):
-        out.append("  " + paint("dim", "stage     ") + paint("text", t["stage"]))
-    if t.get("checkpoint"):
-        out.append("  " + paint("text", fit(t["checkpoint"], width - 4)))
-    if t.get("tasks_total"):
-        w = 20
-        filled = (t.get("tasks_done") or 0) * w // t["tasks_total"]
-        out.append("  " + paint("dim", "checklist ") + paint("green", "█" * filled + "░" * (w - filled))
-                   + paint("dim", f" {t.get('tasks_done') or 0}/{t['tasks_total']}"))
+        out.append("  " + paint(role, "▶") + " " + paint("text", fit(cur.get("detail") or cur.get("tool") or "", width - 24))
+                   + paint("dim", f"  {el}{typ}"))
+    # what is running, then what finished in the last quarter hour
+    recent = now - 15 * 60_000
+    ags = [a for a in e.get("agents") or [] if a.get("status") in ("running", "needs_you") or (a.get("ended") or 0) > recent]
+    shs = [s for s in e.get("shells") or [] if s.get("status") == "running" or (s.get("started") or 0) > recent]
+    for a in ags[:6]:
+        s = a.get("status")
+        g, r = {"running": ("◆", "blue"), "needs_you": ("●", "attn")}.get(s, ("✓", "green"))
+        end = a.get("ended") or now
+        el = elapsed(end - (a.get("started") or end))
+        txt = fit(f"{a.get('type') or 'agent'} · {a.get('description') or ''}", width - 16)
+        out.append(f"  {paint(r, g)} {paint('text' if s in ('running', 'needs_you') else 'dim', f'{txt:<{width - 16}}')} {paint('dim', el)}")
+    for s in shs[:4]:
+        live = s.get("status") == "running"
+        el = elapsed(now - (s.get("started") or now))
+        txt = fit(s.get("command") or "", width - 16)
+        out.append(f"  {paint('blue', '$') if live else paint('green', '✓')} "
+                   f"{paint('text' if live else 'dim', f'{txt:<{width - 16}}')} {paint('dim', el)}")
     tasks = e.get("tasks") or []
     if tasks:
         done = sum(x.get("status") == "completed" for x in tasks)
         cur = next((x for x in tasks if x.get("status") == "in_progress"), None)
-        out.append("  " + paint("dim", "tasks     ") + paint("text", f"{done}/{len(tasks)}")
-                   + (paint("dim", f"  ▶ {fit(cur.get('subject'), width - 24)}") if cur else ""))
+        out.append("  " + paint("dim", "tasks ") + paint("text", f"{done}/{len(tasks)}")
+                   + (paint("dim", f"  ▶ {fit(cur.get('subject'), width - 20)}") if cur else ""))
     if out[-1] != "":
         out.append("")
+    out.append(rule)
 
-    # ── agents + shells
-    ags = e.get("agents") or []
-    if ags:
-        out.append("  " + paint("dim", "agents"))
-        for a in ags[:8]:
-            st = a.get("status")
-            r = {"running": "blue", "needs_you": "red"}.get(st, "dim")
-            g = {"running": "◐", "needs_you": "●"}.get(st, "✓")
-            end = a.get("ended") or now
-            el = elapsed(end - (a.get("started") or end))
-            out.append(f"    {paint(r, g)} {paint('text', f"{fit(a.get('type') or '', 14):<14}")}  "
-                       f"{paint('text', fit(a.get('description') or '', width - 34))}  {paint('dim', el)}")
-    sh = [s for s in e.get("shells") or [] if s.get("status") == "running"]
-    for s in sh[:4]:
-        out.append(f"    {paint('blue', '◐')} {paint('text', fit(s.get('command') or '', width - 20))}  "
-                   f"{paint('dim', elapsed(now - (s.get('started') or now)))}")
-    if ags or sh:
-        out.append("")
-
-    # ── design + stack
+    # ── then: Implement's summary, the stack, the design
+    def field(name, text, r="dim"):
+        out.append("  " + paint("dim", f"{name:<10} ") + paint(r, fit(text, width - 15)))
+    bits = []
+    if t.get("tasks_total"):
+        bits.append(f"{t.get('tasks_done') or 0}/{t['tasks_total']} tasks")
+    if t.get("checkpoints_total"):
+        bits.append(f"{t.get('checkpoints_done') or 0}/{t['checkpoints_total']} checkpoints")
+    if t.get("checkpoint"):
+        bits.append("now: " + t["checkpoint"])
+    if bits:
+        field("IMPLEMENT", " · ".join(bits))
+    stk, why = stack_line(e)
+    if stk:
+        out.append("  " + paint("dim", f"{'STACK':<10} ") + paint({"live": "green", "starting": "yellow"}.get(stk, "dim"), stk)
+                   + paint("dim", " · " + fit(why, width - 22)))
     d = newest_design(e)
     if d:
-        out.append("  " + paint("accent", "design    ") + paint("text", fit(d.get("title") or "", width - 30))
+        out.append("  " + paint("dim", f"{'DESIGN':<10} ") + paint("accent", fit(d.get("title") or "", width - 32))
                    + paint("dim", "  v open · y copy"))
-        out.append("  " + paint("dim", "          " + fit(d["url"], width - 14)))
-    if e.get("stack"):
-        r = {"live": "green", "starting": "yellow"}.get(e["stack"], "dim")
-        hint = "  o open" if e["stack"] in ("live", "starting") else "  s s switch here"
-        out.append("  " + paint("dim", "stack     ") + paint(r, e["stack"]) + paint("dim", hint))
-    out.append("  " + paint("dim", f"pane {(e.get('tmux') or {}).get('pane') or '-'} · {e.get('model') or ''}"))
+        out.append("  " + paint("dim", " " * 11 + fit(d["url"], width - 15)))
+    out.append("  " + paint("dim", f"{'PANE':<10} {(e.get('tmux') or {}).get('pane') or '-'} · {e.get('model') or ''}"))
     print("\n".join(out))
 
 
@@ -1058,6 +1411,7 @@ def main():
     table = {
         "list": cmd_list, "ls": cmd_list,
         "summary": cmd_summary, "pill": cmd_pill, "roster": cmd_roster,
+        "here": cmd_here, "pipelines": cmd_pipelines,
         "jump": cmd_jump, "next": cmd_next, "answer": cmd_answer,
         "stack": cmd_stack, "design": cmd_design, "seen": cmd_seen, "keys": cmd_keys,
         # roster internals

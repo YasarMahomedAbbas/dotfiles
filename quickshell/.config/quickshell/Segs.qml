@@ -3,7 +3,7 @@ import QtQuick
 // A segmented progress strip. Each cell is a code:
 //   "d" done (green) · "r" running (frost; the last running cell pulses)
 //   "b" background work (blue; pulses like running)
-//   "a" needs you (red outline, pulsing) · "s" slow (yellow) · "" not started
+//   "a" needs you (rust outline, pulsing) · "s" slow (yellow) · "" not started
 Item {
     id: root
 
@@ -37,14 +37,14 @@ Item {
                      : code === "a" ? "transparent"
                      :                Colors.bg3
                 border.width: code === "a" ? 1.5 : 0
-                border.color: Colors.red
+                border.color: Colors.attn
 
-                // needs-you cells breathe a red fill
+                // needs-you cells breathe a rust fill
                 Rectangle {
                     anchors.fill: parent
                     radius: parent.radius
                     visible: cell.code === "a"
-                    color: Colors.red
+                    color: Colors.attn
                     opacity: 0
                     SequentialAnimation on opacity {
                         running: cell.code === "a" && root.animate && root.visible

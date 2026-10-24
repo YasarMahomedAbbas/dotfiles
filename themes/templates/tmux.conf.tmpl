@@ -38,12 +38,14 @@ set-option -g status-style bg=${BG},fg=${FG}
 set-option -g status-justify centre
 
 # Left: session pill (frost-cyan text + icon; turns yellow while the prefix key is
-# held) + the ticket pill naming what this session's ticket is FOR.
+# held) + this session's pill: `#1964 Invoice discount control · Verify · agent 5m`
+# when a Claude runs in it (`board here`, docs/agent-board.md), else the ticket pill
+# naming what its ticket is FOR (`board here` hands over to `ticket-pill`).
 #
-# The ticket pill prints ITSELF or nothing, on the same reasoning as the wt-dev pill
+# The pill prints ITSELF or nothing, on the same reasoning as the wt-dev pill
 # below. Both formats are passed to it deliberately: tmux caches a `#()` job by its
-# expanded command string, so a bare `#(ticket-pill)` would run once and paint one
-# session's ticket onto every attached session. The width has to come from here too —
+# expanded command string, so a bare `#(board here)` would run once and paint one
+# session's pill onto every attached session. The width has to come from here too —
 # `display-message -t` targets a pane, not a client, so the script cannot ask for its
 # own. It drops out on its own when the client is too narrow to afford it, which is
 # why the window list stays centred.
@@ -52,13 +54,15 @@ set-option -g status-left "\
 #[bg=${LIGHT_GRAY},fg=#{?client_prefix,${YELLOW},${CYAN}},bold] ${ICON_SESSION} #S \
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_CLOSE}\
 #[bg=default] \
-#(ticket-pill #{session_name} #{client_width})\
+#(board here #{session_name} #{client_width})\
 "
 
 # Right: agent-board pill + live-worktree pill + host pill + clock pill
 #
-# The board pill (`board pill`) says how many Claude sessions need you / are working /
-# run in the background: `● 2 needs you` on red, then `▶ 1 ◐ 3`. The wt-dev pill names
+# The board pill (`board pill`) counts the Claude sessions: `● 1 ▶ 1 ◐ 1 ✓ 1` (needs
+# you in rust, working, background, finished unseen). Given `#{status}` it also turns
+# the second status line (below) on while any session is open and off when none is,
+# so a plain shell keeps one line. The wt-dev pill names
 # the live worktree. Both print ITSELF (caps included) or nothing at all, because a
 # pill whose contents are empty still renders as a stray blob. Each colours its own
 # text, so only the fg inside it varies; #{?...} can't branch on #() output.
@@ -68,12 +72,12 @@ set-option -g status-left "\
 # runs in the tmux server's environment, which is the session it was started from.
 if-shell '[ -n "$HYPRLAND_INSTANCE_SIGNATURE" ]' {
 set-option -g status-right "\
-#(board pill)\
+#(board pill #{status})\
 #(wt-dev tmux)\
 "
 } {
 set-option -g status-right "\
-#(board pill)\
+#(board pill #{status})\
 #(wt-dev tmux)\
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_OPEN}\
 #[bg=${LIGHT_GRAY},fg=${BLUE}] ${ICON_HOST} #h \
@@ -84,6 +88,15 @@ set-option -g status-right "\
 #[fg=${LIGHT_GRAY},bg=default]${HALF_ROUND_CLOSE}\
 "
 }
+
+# Line 2, only while Claude sessions are open (`board pill` switches `status` between
+# 2 and on): a pill per pipeline, `● #2021 !○○○○○ start`, glyph · issue · six stages
+# (✓ done, ! needs you, ▶ working, ◐ background, ○ ahead) · the stage word, this
+# session's pill outlined in rust, then the other sessions as counts.
+set-option -g status-format[1] "#[align=left,bg=${BG}] #(board pipelines #{session_name} #{client_width})"
+
+# The pills are elapsed times and live state; 15 s (the default) lags too far behind.
+set-option -g status-interval 5
 
 # Set max length of left and right section
 # The left section now carries the ticket pill as well as the session pill, and a

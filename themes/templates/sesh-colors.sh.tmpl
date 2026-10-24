@@ -5,10 +5,11 @@
 SESH_FZF_COLORS='bg+:#${bg1},bg:#${bg0},fg:#${fg1},fg+:#${fg0},hl:#${accent},hl+:#${accent},border:#${accent},label:#${accent},gutter:#${bg0},prompt:#${blue},pointer:#${purple},marker:#${green},info:#${fg2},header:#${dim},spinner:#${blue}'
 # Palette colors for the status column sesh-list-bells appends, the ticket card
 # sesh-preview draws, and the agent board (`board` pill/roster, streamdeck-dashboard).
-# Status semantics (docs/agent-board.md §4): red = needs you, fg0 = working,
+# Status semantics (docs/agent-board.md §4): attn (rust) = needs you, fg0 = working,
 # blue = background, green = finished & unseen, yellow = slow (past typical),
 # accent = design, dim = idle.
 SESH_BELL_COLOR='${red}'
+SESH_ATTN_COLOR='${attn}'
 SESH_BUSY_COLOR='${yellow}'
 SESH_DIM_COLOR='${dim}'
 SESH_OK_COLOR='${green}'

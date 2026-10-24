@@ -241,7 +241,7 @@ Rectangle {
                             elide: Text.ElideRight
                             text: "▶ " + (modelData.type || "Agent") + "  " + (modelData.description || "")
                                   + "  " + Board.fmt(Board.now - (modelData.started || Board.now))
-                            color: modelData.status === "needs_you" ? Colors.red : Colors.blue
+                            color: modelData.status === "needs_you" ? Colors.attn : Colors.blue
                             font.family: root.mono; font.pixelSize: 11
                         }
                     }
