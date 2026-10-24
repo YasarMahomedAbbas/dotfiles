@@ -40,13 +40,16 @@ state files exactly as the mod wrote them, each with these fields added:
   ticket   obj    null when nothing is known, else
                   {issue, title, problem, pipeline, stage, stage_index, stage_total,
                    stages, tasks_done, tasks_total, checkpoints_done, checkpoints_total,
-                   checkpoint, slug} — any field may be null. From `ticket-context <cwd>`
+                   checkpoint, checkpoints, slug} — any field may be null. From `ticket-context <cwd>`
                   (cached 30 s per cwd); `issue` falls back to a tmux session named
                   `issue-<n>` or `pa-<n>`; `stage` falls back to the session's
                   @pipeline_label (set by pipeline-status) when ticket-context has none.
                   `pipeline` is "frontend" (travel-smart) or "pa" (personal-assistant);
                   `stages` the six short labels of its stage table (["Refine",
                   "Implement", …]), `stage_index` counting from 1 into them.
+                  `checkpoints` lists the plan's checkpoints in order, each
+                  {name, done, tasks_done, tasks_total}; the task counts are null on
+                  personal-assistant (its checkpoints have no boxes of their own).
 
 `board summary --json`:
   {"needs_you": n, "working": n, "background": n, "unseen": n,
@@ -78,7 +81,7 @@ TICKET_TTL = 30
 # Bumped whenever ticket-context's keys change: the per-cwd cache is shared by every
 # board on the machine, and an older board (or ticket-context) must not serve a newer
 # one its output for the 30 s it is fresh.
-CTX_SCHEMA = 2
+CTX_SCHEMA = 3
 STACK_TTL = 5
 STATES = ("needs_you", "working", "background", "idle")
 GHOSTTY_CLASS = "com.mitchellh.ghostty"
@@ -301,7 +304,9 @@ def worktree_ctx(cwd):
         if not cwd or not os.path.isdir(cwd):
             return ctx
         out = run(["ticket-context", cwd], timeout=4) or ""
-        for ln in out.splitlines():
+        # split("\n"), not splitlines(): that also breaks on \x1e, checkpoint_list's
+        # record separator
+        for ln in out.split("\n"):
             try:
                 toks = shlex.split(ln)
             except ValueError:
@@ -329,6 +334,17 @@ def _int(v):
         return None
 
 
+def checkpoint_list(v):
+    """ticket-context's checkpoint_list (records joined by \\x1e, fields by \\x1f:
+    done, tasks_done, tasks_total, name) as [{name, done, tasks_done, tasks_total}]."""
+    out = []
+    for rec in (v or "").split("\x1e"):
+        f = rec.split("\x1f")
+        if len(f) == 4 and f[3]:
+            out.append({"name": f[3], "done": f[0] == "1", "tasks_done": _int(f[1]), "tasks_total": _int(f[2])})
+    return out or None
+
+
 def build_ticket(e, ctx, sessions):
     tc = ctx["tc"]
     sess = (e.get("tmux") or {}).get("session") or ""
@@ -353,6 +369,7 @@ def build_ticket(e, ctx, sessions):
         "checkpoints_done": _int(tc.get("checkpoints_done")),
         "checkpoints_total": _int(tc.get("checkpoints_total")),
         "checkpoint": tc.get("checkpoint") or None,
+        "checkpoints": checkpoint_list(tc.get("checkpoint_list")),
         "slug": tc.get("slug") or None,
     }
     if not t["stage"]:

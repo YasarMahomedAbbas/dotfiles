@@ -103,7 +103,7 @@ with `ticket-context` (cached 30 s per worktree) and `wt-dev status --short` (ca
 
 | command | does |
 |---|---|
-| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,slug}, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
+| `board list [--json]` | sessions sorted needs_you › working › background › unseen › idle. JSON: array of state files plus `ticket` {issue,title,problem,pipeline,stage,stage_index,stage_total,stages,tasks_done,tasks_total,checkpoints_done,checkpoints_total,checkpoint,checkpoints,slug}; `checkpoints` = [{name,done,tasks_done,tasks_total}] in plan order, `stack` (`live`/`starting`/`off`/null), `unseen` (bool), `stale` (bool), `key` |
 | `board summary [--json]` | counts `{needs_you, working, background, unseen, designs}` and the live stack per project |
 | `board pill [#{status}]` | tmux status-right counts pill (prints nothing when all quiet); given `#{status}`, sets `status` to 2 while any session is open and back to `on` when none is |
 | `board here <session> <width>` | tmux status-left: this session's issue, title, stage and activity; `ticket-pill`'s pill when no Claude runs there |
