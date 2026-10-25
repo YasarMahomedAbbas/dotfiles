@@ -715,44 +715,46 @@ def tmux_role(t, e):
     return t[role] if role in t else t["text"]
 
 
-def status_lines(want_two, current):
-    """Two status lines while any Claude session is open, one otherwise. The pill job
-    passes `#{status}` in, so this only touches tmux when the answer changes."""
-    if current and (current == "2") != want_two:
-        run(["tmux", "set-option", "-g", "status", "2" if want_two else "on"], timeout=2)
+def status_lines(current):
+    """One status line. A board that once drew a second line (`status 2`) is put back,
+    so `board pill #{status}` only touches tmux when it is wrong."""
+    if current == "2":
+        run(["tmux", "set-option", "-g", "status", "on"], timeout=2)
 
 
 def cmd_pill(args):
-    """Status line 1, right: the counts `● N ▶ N ◐ N ✓ N` (needs you in rust, working
-    frost or yellow once slow, background steel, unseen green) in one pill; nothing
-    when all quiet. `board pill #{status}` also keeps the second line on while any
-    session is open (see status_lines)."""
-    entries = [e for e in load(enrich=False) if not e.get("stale")]
+    """Status line, right: a pip per pipeline, `◐#2021 ▶#246 ●#1964`, most urgent
+    first and coloured by state (needs you rust, working white or yellow once slow,
+    background steel, finished green), then the other sessions as counts `✓1 ○2`.
+    Plain text, no pill: nothing when all quiet."""
+    entries = [e for e in load(stacks=False) if not e.get("stale")]
     if args:
-        status_lines(bool(entries), args[0])
-    need = sum(e["state"] == "needs_you" for e in entries)
-    work = [e for e in entries if e["state"] == "working"]
-    bg = sum(e["state"] == "background" for e in entries)
-    unseen = sum(bool(e.get("unseen")) for e in entries)
-    t = theme()
-    inner = []
-    if need:
-        inner.append(f"#[fg=#{t['attn']},bold]● {need}#[nobold]")
-    if work:
-        inner.append(f"#[fg=#{t['yellow'] if any(is_slow(e) for e in work) else t['fg0']}]▶ {len(work)}")
-    if bg:
-        inner.append(f"#[fg=#{t['blue']}]◐ {bg}")
-    if unseen:
-        inner.append(f"#[fg=#{t['green']}]✓ {unseen}")
-    if not inner:
+        status_lines(args[0])
+    if not entries:
         return
-    sys.stdout.write(f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] {' '.join(inner)} "
-                     f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+    t = theme()
+    pipes = [e for e in entries if on_pipeline(e)][:8]
+    rest = [e for e in entries if not on_pipeline(e)] + [e for e in entries if on_pipeline(e)][8:]
+    parts = []
+    for e in pipes:
+        _role, st = status_role(e)
+        num = (e.get("ticket") or {}).get("issue")
+        parts.append(f"#[fg=#{tmux_role(t, e)}]{GLYPH[st]}##{num}")
+    counts = {}
+    for e in rest:
+        _r, st = status_role(e)
+        counts[st] = counts.get(st, 0) + 1
+    order = [("needs_you", "attn"), ("working", "fg0"), ("background", "blue"), ("unseen", "green")]
+    tail = " ".join(f"#[fg=#{t[r]}]{GLYPH[st]}{counts[st]}" for st, r in order if counts.get(st))
+    out = " ".join(parts) + ("  " if parts and tail else "") + tail
+    if out:
+        sys.stdout.write(f"{out}#[fg=default] ")
 
 
 def cmd_here(args):
-    """Status line 1, left: this tmux session's Claude — `#1964 Invoice discount
-    control · Verify · agent 5m` — or, with no Claude in it, `ticket-pill`'s pill.
+    """Status line, left: this tmux session's Claude as plain text — `#1964 Invoice
+    discount control · Implement 3/5 · agent 5m` — or, with no Claude in it,
+    `ticket-pill`'s pill.
 
       board here <session> <client_width>"""
     sess = args[0] if args else ""
@@ -772,7 +774,12 @@ def cmd_here(args):
     budget = min(width - 108, 76)
     if budget < 24:
         return
-    tail = " · ".join(x for x in (stage_label(e) if on_pipeline(e) else "", activity(e)) if x)
+    stage = ""
+    if on_pipeline(e):
+        stage = stage_label(e)
+        n = impl_count(tk) if tk.get("stage_index") == 2 else ""
+        stage += f" {n}" if n else ""
+    tail = " · ".join(x for x in (stage, activity(e)) if x)
     num = f"#{tk['issue']} " if tk.get("issue") else ""
     name = tk.get("title") or tk.get("problem") or e.get("branch") or os.path.basename(e.get("cwd") or "")
     room = budget - len(num) - len(tail) - 3
@@ -780,11 +787,9 @@ def cmd_here(args):
         name, room = "", 0
     text = fit(name, room) if room else ""
     sys.stdout.write(
-        f"#[fg=#{t['pill']},bg=default]{CAP_O}#[bg=#{t['pill']}] "
-        + (f"#[fg=#{t['dim']}]{tesc(num)}" if num else "")
+        (f"#[fg=#{t['dim']}]{tesc(num)}" if num else "")
         + (f"#[fg=#{t['text']}]{tesc(text)} " if text else "")
-        + f"#[fg=#{tmux_role(t, e)}]{'· ' if text or num else ''}{tesc(tail)} "
-        + f"#[fg=#{t['pill']},bg=default]{CAP_C}#[bg=default] ")
+        + f"#[fg=#{t['dim']}]{'· ' if text or num else ''}#[fg=#{tmux_role(t, e)}]{tesc(tail)}#[fg=default] ")
 
 
 def pipeline_pill(e, t, this):
