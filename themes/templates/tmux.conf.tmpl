@@ -38,8 +38,8 @@ set-option -g status-style bg=${BG},fg=${FG}
 set-option -g status-justify centre
 
 # Left: session pill (frost-cyan text + icon; turns yellow while the prefix key is
-# held) + this session's pill: `#1964 Invoice discount control · Verify · agent 5m`
-# when a Claude runs in it (`board here`, docs/agent-board.md), else the ticket pill
+# held) + this session's Claude as plain text: `#1964 Invoice discount control ·
+# Implement 3/5 · agent 5m` when one runs in it (`board here`, docs/agent-board.md), else the ticket pill
 # naming what its ticket is FOR (`board here` hands over to `ticket-pill`).
 #
 # The pill prints ITSELF or nothing, on the same reasoning as the wt-dev pill
@@ -59,10 +59,10 @@ set-option -g status-left "\
 
 # Right: agent-board pill + live-worktree pill + host pill + clock pill
 #
-# The board pill (`board pill`) counts the Claude sessions: `● 1 ▶ 1 ◐ 1 ✓ 1` (needs
-# you in rust, working, background, finished unseen). Given `#{status}` it also turns
-# the second status line (below) on while any session is open and off when none is,
-# so a plain shell keeps one line. The wt-dev pill names
+# The board pips (`board pill`) are plain text: one per pipeline, `◐#2021 ▶#246
+# ●#1964` (needs you in rust, working, background steel), then the other Claude
+# sessions as counts `✓1`. Given `#{status}` it also puts back a second status line
+# an older board left on, so the bar stays one line. The wt-dev pill names
 # the live worktree. Both print ITSELF (caps included) or nothing at all, because a
 # pill whose contents are empty still renders as a stray blob. Each colours its own
 # text, so only the fg inside it varies; #{?...} can't branch on #() output.
@@ -89,11 +89,10 @@ set-option -g status-right "\
 "
 }
 
-# Line 2, only while Claude sessions are open (`board pill` switches `status` between
-# 2 and on): a pill per pipeline, `● #2021 !○○○○○ start`, glyph · issue · six stages
-# (✓ done, ! needs you, ▶ working, ◐ background, ○ ahead) · the stage word, this
-# session's pill outlined in rust, then the other sessions as counts.
-set-option -g status-format[1] "#[align=left,bg=${BG}] #(board pipelines #{session_name} #{client_width})"
+# One line only: every pipeline is a pip on the right (above); `prefix + i` is the
+# roster in depth.
+set-option -g status on
+set-option -gu status-format[1]
 
 # The pills are elapsed times and live state; 15 s (the default) lags too far behind.
 set-option -g status-interval 5
