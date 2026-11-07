@@ -1,0 +1,16 @@
+{
+  "// what": "Copy to projects.json (per machine, gitignored). One entry per project herd can start ticket work in.",
+  "myapp": {
+    "root": "~/projects/myapp",
+    "base": "main",
+    "worktree": "../myapp-{ref}",
+    "workdir": "",
+    "seed": [".env", ".claude/settings.local.json"],
+    "setup": "npm ci",
+    "source": "github-issue",
+    "first": {
+      "claude": "/fetch-ticket-github-issue #{n}",
+      "codex": "Use the fetch-ticket-github-issue skill for issue #{n}"
+    }
+  }
+}

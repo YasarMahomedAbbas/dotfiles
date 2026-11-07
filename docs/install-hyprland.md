@@ -16,7 +16,7 @@ cd ~/projects/personal/dotfiles
 Stow **everything** on this machine (universal + Hyprland-only):
 
 ```bash
-stow bin gh-dash ghostty git fish lazygit nvim sesh starship tmux   # universal
+stow bin gh-dash ghostty git fish herd lazygit nvim sesh starship tmux   # universal
 stow hypr waybar mako wofi streamdeck                               # Hyprland desktop
 ```
 
@@ -35,7 +35,7 @@ stow hypr waybar mako wofi streamdeck                               # Hyprland d
 ```bash
 sudo pacman -S --needed \
   ghostty neovim starship lazygit git-delta diffnav \
-  fish tmux ripgrep fd fzf zoxide eza lazydocker github-cli ttf-jetbrains-mono-nerd
+  fish tmux ripgrep fd fzf jq zoxide eza lazydocker github-cli ttf-jetbrains-mono-nerd
 paru -S --needed sesh             # AUR (tmux session manager; picker on <prefix>+s)
 ```
 

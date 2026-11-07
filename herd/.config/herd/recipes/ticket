@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# herd recipe: ticket — start ticket work in its own worktree.
+#
+#   herd --recipe ticket -- "#2021"                 project from the folder you're in
+#   herd --recipe ticket -- "travelsmart#2021"      or named
+#   herd --recipe ticket --project agents -- M0-22
+#   herd --recipe ticket -- "#2021" --unattended    words after the ref go to the first message
+#
+# Reads the project from projects.json, makes the worktree (detached at origin/<base>,
+# seeded, set up) unless it exists, writes ticket.md into the worktree's private git dir,
+# and prints the settings herd starts the agent with. Contract: print one JSON object
+# {project, at, name, desc, task, key, labels}; anything on stderr is shown to the person.
+
+set -euo pipefail
+CONF="${HERD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/herd}"
+RUNNER="${HERD_RUNNER:-claude}"
+die() { echo "ticket: $*" >&2; exit 1; }
+expand() { case $1 in "~") printf '%s\n' "$HOME" ;; "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
+P="$CONF/projects.json"
+[ -f "$P" ] || die "no $P — copy projects.example.json and fill it in"
+
+ref_in=${1:-}; [ -n "$ref_in" ] || die "which ticket? (#2021, M0-22, travelsmart#2021)"
+shift; extra="$*"
+
+project="${HERD_PROJECT:-}"
+case $ref_in in
+  *#*) [ -n "${ref_in%%#*}" ] && project=${ref_in%%#*}; ref=${ref_in#*#} ;;
+  *) ref=$ref_in ;;
+esac
+
+# No project named: the one the caller's folder belongs to.
+if [ -z "$project" ]; then
+  dir=${HERD_CWD:-$PWD}
+  common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  for p in $(jq -r 'keys[] | select(startswith("//") | not)' "$P"); do
+    root=$(expand "$(jq -r --arg p "$p" '.[$p].root' "$P")")
+    if [ "$common" = "$root/.git" ] || [ "${dir#"$root"}" != "$dir" ]; then project=$p; break; fi
+  done
+fi
+[ -n "$project" ] || die "which project is $ref_in in? (travelsmart#2021, or --project)"
+pj=$(jq -c --arg p "$project" '.[$p] // empty' "$P"); [ -n "$pj" ] || die "unknown project: $project"
+get() { jq -r --arg k "$1" '.[$k] // empty' <<<"$pj"; }
+
+root=$(expand "$(get root)")
+base=$(get base); base=${base:-main}
+source=$(get source); source=${source:-github-issue}
+n=$ref                                   # issue number, or the board ID as given
+lref=$(printf '%s' "$ref" | tr '[:upper:]' '[:lower:]')
+fill() { sed -e "s|{n}|$n|g" -e "s|{ref}|$lref|g" -e "s|{REF}|$ref|g"; }
+
+# ------------------------------------------------------------ the ticket itself
+title="" body="" url=""
+case $source in
+  github-issue)
+    [[ $n =~ ^[0-9]+$ ]] || die "$project tickets are issue numbers, got '$ref'"
+    if j=$(cd "$root" && gh issue view "$n" --json title,body,url 2>/dev/null); then
+      title=$(jq -r .title <<<"$j"); body=$(jq -r .body <<<"$j"); url=$(jq -r .url <<<"$j")
+    else echo "ticket: couldn't read issue #$n with gh; naming it by number" >&2; fi ;;
+  github-project:*)
+    spec=${source#github-project:}; owner=${spec%/*}; num=${spec#*/}
+    if j=$(gh project item-list "$num" --owner "$owner" --format json -L 1000 2>/dev/null |
+           jq -ce --arg r "$ref" '[.items[] | select((.title | ascii_upcase | startswith($r | ascii_upcase)))][0] // empty'); then
+      title=$(jq -r '.title' <<<"$j" | sed -E 's/^[^ ]+ *(—|-|:) *//')
+      body=$(jq -r '.content.body // ""' <<<"$j"); url=$(jq -r '.content.url // ""' <<<"$j")
+    else echo "ticket: $ref not found on board $spec; naming it by ID" >&2; fi ;;
+  none) ;;
+  *) die "unknown source '$source' for $project" ;;
+esac
+
+# Tab label: the ref, then 2-3 words of the title.
+label=$( [[ $ref =~ ^[0-9]+$ ]] && printf '#%s' "$ref" || printf '%s' "$ref" )
+words=$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ' |
+  awk '{ n=0; out=""; for (i=1;i<=NF && n<3;i++){ if ($i ~ /^(a|an|the|to|of|for|in|on|and|with|is|be|when|it|its|from|by|at|as|into|after|before|not|no|doesn|don|t|s)$/) continue; out=out (n?" ":"") $i; n++ } print out }')
+name="$label${words:+ $words}"
+
+# Description: the first real sentence of the body, else the title.
+problem=$(printf '%s\n' "$body" | sed -e '/^\s*$/d' -e '/^\s*#/d' -e '/^\s*[-*|>]/d' -e '/^\s*<!--/d' | head -n1 |
+  sed -E 's/\*\*|`//g' | sed -E 's/([.!?])\s.*/\1/' | cut -c1-160)
+desc=${problem:-$title}
+
+# ------------------------------------------------------------ the worktree
+wt_t=$(get worktree)
+if [ -n "$wt_t" ]; then
+  wt=$(printf '%s' "$wt_t" | fill)
+  case $wt in /*) ;; "~"*) wt=$(expand "$wt") ;; *) wt=$(cd "$root" && realpath -m "$wt") ;; esac
+  if [ ! -d "$wt" ]; then
+    {
+      echo "ticket: making worktree $wt (detached at origin/$base)"
+      git -C "$root" fetch -q origin "$base"
+      mkdir -p "$(dirname "$wt")"
+      git -C "$root" worktree add -q --detach "$wt" "origin/$base" ||
+        { sleep 1; git -C "$root" worktree add -q --detach "$wt" "origin/$base"; }   # another bootstrap in the same second
+      for f in $(jq -r '.seed // [] | .[]' <<<"$pj"); do
+        [ -f "$root/$f" ] && mkdir -p "$(dirname "$wt/$f")" && cp "$root/$f" "$wt/$f"
+      done
+      setup=$(get setup)
+      if [ -n "$setup" ]; then echo "ticket: setup: $setup"; (cd "$wt" && bash -c "$setup"); fi
+    } >&2
+  fi
+else
+  wt=$root
+fi
+wd=$(get workdir); at=$wt${wd:+/$wd}
+
+# ticket.md in the worktree's private git dir: never committed, gone with the worktree.
+if [ -n "$title" ] && gd=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null); then
+  { printf -- '---\nref: %s\nproject: %s\ntitle: %s\nurl: %s\nproblem: %s\n---\n\n# %s %s\n\n%s\n' \
+      "$ref" "$project" "$title" "$url" "$desc" "$label" "$title" "$body"; } > "$gd/ticket.md" 2>/dev/null || true
+fi
+
+# ------------------------------------------------------------ first message
+first=$(jq -r --arg r "$RUNNER" '.first[$r] // .first.claude // empty' <<<"$pj")
+[ -n "$first" ] || die "$project has no first message for runner $RUNNER (projects.json .first)"
+task=$(printf '%s' "$first" | fill)${extra:+ $extra}
+
+jq -cn --arg project "$project" --arg at "$at" --arg name "$name" --arg desc "$desc" --arg task "$task" \
+  --arg key "$project:$lref" --arg title "$title" --arg url "$url" --arg ref "$ref" '
+  {project: $project, at: $at, name: $name, desc: $desc, task: $task, key: $key,
+   labels: ({"herd.title": $title, "ticket.ref": $ref, "ticket.url": $url} | with_entries(select(.value != "")))}'
