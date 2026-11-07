@@ -1,0 +1,499 @@
+#!/usr/bin/env bash
+# herd — start an agent somewhere and give it a job. Design: docs/herd.md (dotfiles).
+#
+#   herd [options] -- "the task"      start a herd
+#   herd ls [--json] [--group g]      live herds (also --project p)
+#   herd stage <stage> [state]        from inside a herd: record where it is
+#   herd report "<message>"           from inside a herd: tell whoever started it
+#   herd go <key|name|id>             bring a herd on screen
+#   herd close <key|name|id>          end a herd
+#
+# Plain bash + git + jq, so it runs on any Linux box. The multiplexer is a backend
+# (herdr, hc, tmux, here), picked per call from where herd was called.
+
+set -euo pipefail
+
+CONF="${HERD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/herd}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/herd"
+
+die()  { echo "herd: $*" >&2; exit 1; }
+warn() { echo "herd: $*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+expand() { case $1 in "~") printf '%s\n' "$HOME" ;; "~/"*) printf '%s\n' "$HOME/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac; }
+conf() { [ -f "$CONF/config.json" ] && jq -r --arg k "$1" '.[$k] // empty' "$CONF/config.json" || true; }
+
+have jq || die "needs jq (apt install jq / pacman -S jq)"
+
+usage() {
+  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+
+Options for starting a herd:
+  --place tab|right|down|space|bg   where it appears (default: tab)
+  --at <folder|project>             where it runs (default: here)
+  --project <name>                  project from projects.json (recipes use it)
+  --runner <name>                   agent from runners.json (default: config, else claude)
+  --name "…" / --desc "…"           tab title / one-line description
+  --tab <id> / --pane <id>          put it in that tab or beside that pane
+  --group <id>                      label shared by related herds
+  --label k=v                       an extra label (repeatable)
+  --recipe <name>                   a file in ~/.config/herd/recipes/
+  --report                          it reports back to whoever started it
+  --backend herdr|hc|tmux|here      override detection
+  --focus / --no-focus              show it now (default: tab/space yes, others no)
+EOF
+}
+
+# ---------------------------------------------------------------- backend
+
+window_up() { have herdr-app && herdr-app status 2>/dev/null | jq -e '.space' >/dev/null 2>&1; }
+
+detect_backend() {
+  local b="${opt_backend:-${HERD_BACKEND:-}}"
+  if [ -z "$b" ]; then
+    if [ -n "${TMUX:-}" ]; then b=tmux                   # innermost wins
+    elif [ -n "${HC_TERMINAL_ID:-}" ]; then b=herdr
+    else
+      b=$(conf backend); [ "$b" = auto ] && b=""
+    fi
+  fi
+  if [ -z "$b" ]; then
+    if window_up; then b=herdr; elif have hc; then b=hc; elif have tmux; then b=tmux; else b=here; fi
+  fi
+  # A herdr window that isn't open still has its core: run headless, it shows up later.
+  if [ "$b" = herdr ] && ! window_up; then b=hc; fi
+  case $b in
+    herdr|hc) have hc || die "backend $b needs hc (herdr-core)" ;;
+    tmux) have tmux || die "backend tmux needs tmux" ;;
+    here) ;;
+    *) die "unknown backend: $b" ;;
+  esac
+  printf '%s\n' "$b"
+}
+
+# Who is calling: an address a report can go back to.
+caller_id() {
+  if [ -n "${TMUX_PANE:-}" ] && [ -n "${TMUX:-}" ]; then printf '%s\n' "$TMUX_PANE"
+  elif [ -n "${HC_TERMINAL_ID:-}" ]; then printf '%s\n' "$HC_TERMINAL_ID"
+  fi
+}
+
+# ---------------------------------------------------------------- helpers
+
+caller_watched() {
+  case $1 in
+    herdr) [ -n "${HC_TERMINAL_ID:-}" ] || return 1
+           local fp; fp=$(herdr-app status 2>/dev/null | jq -r '.focused_pane // empty')
+           [ -n "$fp" ] && [ "$(herdr_where "$HC_TERMINAL_ID" | awk '{print $3}')" = "$fp" ] ;;
+    tmux)  [ -n "${TMUX_PANE:-}" ] &&
+           [ "$(tmux display-message -p -t "$TMUX_PANE" '#{&&:#{pane_active},#{&&:#{window_active},#{session_attached}}}' 2>/dev/null)" = 1 ] ;;
+    *) return 1 ;;
+  esac
+}
+
+slug() { tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//' | cut -c1-"${1:-32}" | sed 's/-$//'; }
+
+short_name() {   # first few words of a task, for a tab title
+  printf '%s' "$1" | head -n1 | tr -s '[:space:]' ' ' |
+    awk '{ out=""; n=0; for (i=1;i<=NF && n<4;i++){ w=tolower($i); gsub(/[^a-z0-9#._-]/,"",w);
+           if (w ~ /^(a|an|the|to|of|for|in|on|and|with|my|me|please|out|why|is|be)$/ || w=="") continue;
+           out = out (n?" ":"") w; n++ } print out }' | cut -c1-28
+}
+
+project_json() { [ -f "$CONF/projects.json" ] && jq -c --arg p "$1" '.[$p] // empty' "$CONF/projects.json" || true; }
+
+# The project a folder belongs to: its root, or a worktree of it.
+project_of() {
+  local dir top common p root
+  dir=$(cd "$1" 2>/dev/null && pwd) || return 0
+  [ -f "$CONF/projects.json" ] || return 0
+  common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)
+  for p in $(jq -r 'keys[]' "$CONF/projects.json"); do
+    root=$(expand "$(jq -r --arg p "$p" '.[$p].root' "$CONF/projects.json")")
+    if [ "$top" = "$root" ] || [ "$common" = "$root/.git" ] || [ "${dir#"$root"/}" != "$dir" ]; then
+      printf '%s\n' "$p"; return 0
+    fi
+  done
+}
+
+runner_argv() {   # JSON array
+  local r="$1" f="$CONF/runners.json"
+  [ -f "$f" ] || die "no $f"
+  jq -ce --arg r "$r" '.[$r].argv' "$f" 2>/dev/null || die "unknown runner: $r (see $f)"
+}
+runner_mode() { jq -r --arg r "$1" '.[$r].task // "arg"' "$CONF/runners.json"; }
+
+# ---------------------------------------------------------------- herds that exist
+
+# Every live herd as JSON lines {id, backend, name, key, desc, stage, state, cwd}.
+list_herds() {
+  if have hc; then
+    # `hc ls` leaves labels out; `hc get` has them.
+    local t
+    for t in $(hc ls --json 2>/dev/null | jq -r '.terminals[]? | select(.state == "live") | .address'); do
+      hc get "$t" --json 2>/dev/null || true
+    done | jq -c '
+      select(.state == "live") | select((.labels // {})["herd.name"]) |
+      { id: .address, backend: "herdr", name: .labels["herd.name"], key: (.labels["herd.key"] // ""),
+        desc: (.labels["herd.desc"] // ""), stage: (.labels["herd.stage"] // ""),
+        state: (.labels["herd.state"] // .status // ""), status: (.status // ""),
+        group: (.labels["herd.group"] // ""), cwd: (.cwd // ""), labels: (.labels // {}) }' || true
+  fi
+  if have tmux && tmux list-sessions >/dev/null 2>&1; then
+    tmux list-panes -a -F '#{pane_id}	#{@herd_name}	#{@herd_key}	#{@herd_desc}	#{@herd_stage}	#{@herd_state}	#{@herd_group}	#{pane_current_path}	#{@herd_labels}' 2>/dev/null |
+      awk -F'\t' '$2 != ""' |
+      jq -Rc 'split("\t") | {id: .[0], backend: "tmux", name: .[1], key: .[2], desc: .[3], stage: .[4],
+               state: .[5], status: "", group: .[6], cwd: .[7], labels: ((.[8] | fromjson?) // {})}' || true
+  fi
+}
+
+find_herd() {   # by id, key or name
+  list_herds | jq -c --arg q "$1" 'select(.id == $q or .key == $q or .name == $q)' | head -n1
+}
+
+# ---------------------------------------------------------------- herdr placement
+
+herdr_ls() { herdr-app ls 2>/dev/null; }
+
+# The space showing terminal $1 (no machine prefix), and its pane.
+herdr_where() {
+  herdr_ls | jq -r --arg t "$1" '.spaces[] as $s | $s.tabs[] as $tb | $tb.terminals[] |
+    select(.terminal == $t) | "\($s.id) \($tb.id) \(.pane)"' | head -n1
+}
+
+herdr_space_for() {   # a project's space: by name, else by folder
+  herdr_ls | jq -r --arg n "$1" --arg f "$2" '
+    [.spaces[] | select(.machine == null) | select((.name|ascii_downcase) == ($n|ascii_downcase) or .folder == $f)][0].id // empty'
+}
+
+# ---------------------------------------------------------------- start
+
+start() {
+  local opt_place="" opt_at="" opt_project="" opt_runner="" opt_name="" opt_desc="" opt_tab="" opt_pane=""
+  local opt_group="" opt_recipe="" opt_report=0 opt_focus="" opt_labels="{}"
+  opt_backend=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --place) opt_place=$2; shift 2 ;;
+      --at) opt_at=$2; shift 2 ;;
+      --project) opt_project=$2; shift 2 ;;
+      --runner) opt_runner=$2; shift 2 ;;
+      --name) opt_name=$2; shift 2 ;;
+      --desc) opt_desc=$2; shift 2 ;;
+      --tab) opt_tab=$2; shift 2 ;;
+      --pane) opt_pane=$2; shift 2 ;;
+      --group) opt_group=$2; shift 2 ;;
+      --label) [[ $2 == *=* ]] || die "--label wants k=v"
+               opt_labels=$(jq -c --arg k "${2%%=*}" --arg v "${2#*=}" '. + {($k): $v}' <<<"$opt_labels"); shift 2 ;;
+      --recipe) opt_recipe=$2; shift 2 ;;
+      --report) opt_report=1; shift ;;
+      --no-report) opt_report=0; shift ;;
+      --backend) opt_backend=$2; shift 2 ;;
+      --focus) opt_focus=1; shift ;;
+      --no-focus) opt_focus=0; shift ;;
+      --) shift; break ;;
+      -h|--help) usage; exit 0 ;;
+      -*) die "unknown option: $1" ;;
+      *) break ;;
+    esac
+  done
+  local task="$*"
+  local runner="${opt_runner:-$(conf runner)}"; runner="${runner:-claude}"
+
+  # A recipe fills in whatever the flags left open.
+  local r_json="{}"
+  if [ -n "$opt_recipe" ]; then
+    local rf="$CONF/recipes/$opt_recipe"
+    [ -x "$rf" ] || die "no recipe $opt_recipe ($rf, executable)"
+    r_json=$(HERD_RUNNER="$runner" HERD_CONF="$CONF" HERD_PROJECT="$opt_project" HERD_CWD="$PWD" "$rf" "$@") ||
+      die "recipe $opt_recipe failed"
+    jq -e 'type == "object"' >/dev/null <<<"$r_json" || die "recipe $opt_recipe printed no JSON object"
+  fi
+  rget() { jq -r --arg k "$1" '.[$k] // empty' <<<"$r_json"; }
+
+  local key; key=$(rget key)
+  if [ -n "$key" ]; then
+    local found; found=$(find_herd "$key" || true)
+    if [ -n "$found" ]; then
+      warn "already running: $(jq -r '.name' <<<"$found") — going there"
+      go "$(jq -r '.id' <<<"$found")" >/dev/null || true
+      jq -c '. + {existing: true}' <<<"$found"
+      return 0
+    fi
+  fi
+
+  [ -n "$(rget task)" ] && task=$(rget task)
+  [ -n "$task" ] || die "no task given (herd -- \"what to do\")"
+  local project="${opt_project:-$(rget project)}"
+  local at="${opt_at:-$(rget at)}"
+  if [ -z "$at" ] && [ -n "$project" ]; then
+    local pj; pj=$(project_json "$project"); [ -n "$pj" ] || die "unknown project: $project"
+    at=$(expand "$(jq -r '.root' <<<"$pj")")
+    local wd; wd=$(jq -r '.workdir // empty' <<<"$pj"); [ -n "$wd" ] && at="$at/$wd"
+  elif [ -n "$at" ] && [ -n "$(project_json "$at")" ] && [ ! -d "$(expand "$at")" ]; then
+    project=$at; at=$(expand "$(jq -r --arg p "$at" '.[$p].root' "$CONF/projects.json")")
+  fi
+  at=$(expand "${at:-$PWD}")
+  [ -d "$at" ] || die "no such folder: $at"
+  [ -n "$project" ] || project=$(project_of "$at")
+  local name="${opt_name:-$(rget name)}"; name="${name:-$(short_name "$task")}"; name="${name:-herd}"
+  local desc="${opt_desc:-$(rget desc)}"; desc="${desc:-$(printf '%s' "$task" | head -n1 | cut -c1-140)}"
+  local place="${opt_place:-$(rget place)}"; place="${place:-tab}"
+  [ -n "$opt_tab" ] && [ -z "$opt_place" ] && place=right
+  case $place in tab|right|down|space|bg) ;; *) die "unknown place: $place" ;; esac
+  local group="${opt_group:-$(rget group)}"
+  local backend; backend=$(detect_backend)
+  local parent; parent=$(caller_id)
+  [ -n "$key" ] || key=""
+
+  if [ "$opt_report" = 1 ]; then
+    [ -n "$parent" ] || warn "--report: not called from a terminal herd can reach; nobody to report to"
+    task="$task
+
+When you finish, or get stuck and need a decision, report back with:
+  herd report \"<one-line result, or the path of a file with the details>\""
+  fi
+
+  # The agent's command line: env carries herd's context into the child.
+  local argv mode
+  argv=$(runner_argv "$runner"); mode=$(runner_mode "$runner")
+  local envs
+  envs=$(jq -cn --arg p "$parent" --arg b "$backend" --arg k "$key" --arg n "$name" \
+    '["env", "HERD_PARENT=\($p)", "HERD_BACKEND=\($b)", "HERD_KEY=\($k)", "HERD_NAME=\($n)"]')
+  local full
+  if [ "$mode" = arg ]; then
+    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --arg t "$task" '$e + $a + [$t]')
+  else
+    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" '$e + $a')
+  fi
+
+  # Labels every backend records.
+  local labels
+  labels=$(jq -cn --arg name "$name" --arg desc "$desc" --arg key "$key" --arg runner "$runner" \
+      --arg recipe "$opt_recipe" --arg group "$group" --arg parent "$parent" --arg project "$project" \
+      --argjson extra "$(jq -c '.labels // {}' <<<"$r_json")" --argjson mine "$opt_labels" '
+    {"herd.name": $name, "herd.desc": $desc, "herd.key": $key, "herd.runner": $runner,
+     "herd.recipe": $recipe, "herd.group": $group, "herd.parent": $parent, "herd.project": $project}
+    + $extra + $mine | with_entries(select(.value != ""))')
+
+  # A new tab/space takes focus only when whoever started it is what the person is looking
+  # at; an autopilot or a background herd starting work must not pull them away.
+  local focus="$opt_focus"
+  if [ -z "$focus" ]; then
+    focus=0
+    case $place in tab|space) caller_watched "$backend" && focus=1 ;; esac
+  fi
+
+  local id
+  case $backend in
+    herdr) id=$(launch_herdr) ;;
+    hc)    id=$(launch_hc) ;;
+    tmux)  id=$(launch_tmux) ;;
+    here)  launch_here ;;   # does not return
+  esac
+  [ -n "$id" ] || die "launch failed"
+
+  if [ "$mode" = send ]; then
+    case $backend in
+      herdr|hc) hc wait "$id" --timeout 60 >/dev/null 2>&1 || true; hc send "$id" "$task" >/dev/null ;;
+      tmux) sleep 3; tmux send-keys -t "$id" -l "$task"; tmux send-keys -t "$id" Enter ;;
+    esac
+  fi
+
+  jq -cn --arg id "$id" --arg b "$backend" --arg p "$place" --arg n "$name" --arg k "$key" --arg at "$at" \
+    '{id: $id, backend: $b, place: $p, name: $n, key: $k, at: $at}'
+}
+
+label_args() { jq -r 'to_entries[] | "\(.key)=\(.value)"' <<<"$labels"; }
+
+apply_hc_labels() {
+  local t=$1; local -a kv; mapfile -t kv < <(label_args)
+  [ ${#kv[@]} -gt 0 ] && hc label "$t" "${kv[@]}" >/dev/null
+}
+
+# argv that starts in $at, for commands that take no folder.
+in_dir() { jq -cn --arg d "$at" --argjson a "$full" '["bash", "-c", "cd \"$1\" && shift && exec \"$@\"", "herd", $d] + $a'; }
+
+launch_herdr() {
+  local out t sp pn where prev
+  prev=$(herdr-app status 2>/dev/null | jq -r '.focused_pane // empty')   # herdr shows new tabs at once
+  where=""; [ -n "${HC_TERMINAL_ID:-}" ] && where=$(herdr_where "$HC_TERMINAL_ID")
+  case $place in
+    space)
+      out=$(herdr-app do space.new "$(jq -cn --arg n "${project:-$name}" --arg tab "$name" --arg f "$at" --argjson a "$full" \
+        '{name: $n, tab: $tab, folder: $f, argv: $a}')") ;;
+    tab)
+      if [ -n "$project" ]; then
+        local root; root=$(expand "$(jq -r --arg p "$project" '.[$p].root // empty' "$CONF/projects.json" 2>/dev/null)")
+        sp=$(herdr_space_for "$project" "${root:-$at}")
+        if [ -z "$sp" ]; then
+          out=$(herdr-app do space.new "$(jq -cn --arg n "$project" --arg tab "$name" --arg f "${root:-$at}" --argjson a "$(in_dir)" \
+            '{name: $n, tab: $tab, folder: $f, argv: $a}')")
+        fi
+      else
+        sp=${where%% *}
+      fi
+      if [ -z "${out:-}" ]; then
+        out=$(herdr-app do tab.new "$(jq -cn --arg n "$name" --arg s "$sp" --arg f "$at" --argjson a "$full" \
+          '{name: $n, folder: $f, argv: $a} + (if $s == "" then {} else {space: $s} end)')")
+      fi ;;
+    right|down)
+      if [ -n "$opt_tab" ]; then   # into a given tab: let herdr adopt an hc terminal there
+        sp=$(herdr_ls | jq -r --arg t "$opt_tab" '.spaces[] | select(any(.tabs[]; .id == $t)) | .id' | head -n1)
+        [ -n "$sp" ] || die "no tab $opt_tab"
+        hc_run --label "herdr.space=$sp" --label "herdr.tab=$opt_tab"
+        return
+      fi
+      pn="$opt_pane"; [ -n "$pn" ] || pn=$(awk '{print $3}' <<<"$where")
+      [ -n "$pn" ] || pn=$(herdr-app status | jq -r '.focused_pane // empty')
+      out=$(herdr-app do pane.split "$(jq -cn --arg d "$place" --arg p "$pn" --argjson a "$(in_dir)" \
+        '{direction: $d, argv: $a} + (if $p == "" then {} else {pane: $p} end)')") ;;
+    bg)
+      hc_run; return ;;
+  esac
+  jq -e '.error' >/dev/null 2>&1 <<<"$out" && die "herdr: $(jq -r '.error' <<<"$out")"
+  t=$(jq -r '.terminal // empty' <<<"$out")
+  [ -n "$t" ] || die "herdr returned no terminal: $out"
+  apply_hc_labels "$t"
+  if [ "$focus" = 1 ]; then herdr-app do pane.focus "$(jq -cn --arg t "$t" '{terminal: $t}')" >/dev/null 2>&1 || true
+  elif [ -n "$prev" ]; then herdr-app do pane.focus "$(jq -cn --arg p "$prev" '{pane: $p}')" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$t"
+}
+
+# hc terminal: background herds, herdr with no window, and placement into a given tab.
+hc_run() {
+  local -a a; mapfile -t a < <(jq -r '.[]' <<<"$full")
+  local -a kv=(); local l; while IFS= read -r l; do kv+=(--label "$l"); done < <(label_args)
+  local parent_flag=--no-parent; [ "$place" = bg ] && [ "$opt_report" = 1 ] && parent_flag=""
+  hc run --json --bg --outlive-parent --no-notify --keep ${parent_flag:+"$parent_flag"} --cwd "$at" \
+    "$@" "${kv[@]}" -- "${a[@]}" | jq -r '.address'
+}
+
+launch_hc() {
+  if [ "$place" = bg ]; then hc_run; return; fi
+  # No window: label it for a space so it appears when herdr opens. A space id herdr
+  # doesn't know becomes a new space, so reuse the one last seen for this project.
+  mkdir -p "$CACHE"
+  local k="${project:-herd}" sp
+  sp=$(jq -r --arg k "$k" '.[$k] // empty' "$CACHE/spaces.json" 2>/dev/null || true)
+  [ -n "$sp" ] || sp="herd-$(printf '%s' "$k" | slug 24)"
+  warn "herdr window isn't open: started headless; it appears in space '$k' when herdr opens"
+  hc_run --label "herdr.space=$sp"
+}
+
+launch_tmux() {
+  local -a a; mapfile -t a < <(jq -r '.[]' <<<"$full")
+  local session pane fresh=""
+  if [ -n "${TMUX:-}" ]; then session=$(tmux display-message -p '#{session_name}')
+  else session="${project:-herd}"; tmux has-session -t "=$session" 2>/dev/null || fresh=1
+  fi
+  local -a quiet=(); [ "$focus" = 1 ] || quiet=(-d)
+  case $place in
+    tab)
+      if [ -n "$fresh" ]; then   # the herd is the new session's first window, no stray shell
+        pane=$(tmux new-session -d -s "$session" -n "$name" -c "$at" -P -F '#{pane_id}' -- "${a[@]}")
+      else
+        pane=$(tmux new-window "${quiet[@]}" -t "$session:" -n "$name" -c "$at" -P -F '#{pane_id}' -- "${a[@]}")
+      fi ;;
+    right) pane=$(tmux split-window -h "${quiet[@]}" ${opt_pane:+-t "$opt_pane"} -c "$at" -P -F '#{pane_id}' -- "${a[@]}") ;;
+    down)  pane=$(tmux split-window -v "${quiet[@]}" ${opt_pane:+-t "$opt_pane"} -c "$at" -P -F '#{pane_id}' -- "${a[@]}") ;;
+    space|bg)
+      local s; s=$(printf '%s' "${key:-$name}" | slug 32)
+      pane=$(tmux new-session -d -s "$s" -n "$name" -c "$at" -P -F '#{pane_id}' -- "${a[@]}")
+      [ "$place" = space ] && [ "$focus" = 1 ] && [ -n "${TMUX:-}" ] && tmux switch-client -t "=$s" ;;
+  esac
+  local k v
+  while IFS=$'\t' read -r k v; do
+    tmux set-option -p -t "$pane" "@$(tr '.' '_' <<<"$k")" "$v"
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$labels")
+  tmux set-option -p -t "$pane" @herd_labels "$labels"
+  tmux select-pane -t "$pane" -T "$name — $desc"
+  printf '%s\n' "$pane"
+}
+
+launch_here() {
+  [ "$place" = bg ] && die "backend here can't run in the background"
+  [ "$place" = tab ] || warn "backend here: running in this terminal instead of '$place'"
+  local -a a; mapfile -t a < <(jq -r '.[]' <<<"$full")
+  cd "$at" && exec "${a[@]}"
+}
+
+# ---------------------------------------------------------------- the other commands
+
+cmd_ls() {
+  local json=0 group="" project=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --json) json=1; shift ;;
+      --group) group=$2; shift 2 ;;
+      --project) project=$2; shift 2 ;;
+      *) die "usage: herd ls [--json] [--group <g>] [--project <p>]" ;;
+    esac
+  done
+  local all; all=$(list_herds | jq -c --arg g "$group" --arg p "$project" \
+    'select(($g == "" or .group == $g) and ($p == "" or (.labels["herd.project"] // "") == $p or (.key | startswith($p + ":"))))')
+  if [ "$json" = 1 ]; then jq -s . <<<"$all"; return; fi
+  [ -n "$all" ] || return 0
+  printf '%s\n' "$all" | jq -r '[.id, .name, (.stage + (if .state != "" then " (" + .state + ")" else "" end)), .desc] | @tsv' |
+    column -t -s $'\t' 2>/dev/null || printf '%s\n' "$all" | jq -r '[.id, .name, .stage, .desc] | @tsv'
+}
+
+cmd_stage() {   # safe to call anywhere: outside a herd it does nothing
+  local stage=${1:-} state=${2:-running}
+  [ -n "$stage" ] || die "usage: herd stage <stage> [running|blocked|done]"
+  if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+    tmux set-option -p -t "$TMUX_PANE" @herd_stage "$stage" 2>/dev/null || true
+    tmux set-option -p -t "$TMUX_PANE" @herd_state "$state" 2>/dev/null || true
+  elif [ -n "${HC_TERMINAL_ID:-}" ] && have hc; then
+    hc label "$HC_TERMINAL_ID" "herd.stage=$stage" "herd.state=$state" >/dev/null 2>&1 || true
+  fi
+}
+
+cmd_report() {
+  local msg="$*" to="${HERD_PARENT:-}"
+  [ -n "$msg" ] || die "usage: herd report \"<message>\""
+  [ -n "$to" ] || die "nobody to report to (this herd wasn't started with --report)"
+  case $to in
+    %*) tmux send-keys -t "$to" -l "[herd ${HERD_NAME:-}] $msg" && tmux send-keys -t "$to" Enter ;;
+    *)  hc send "$to" "$msg" >/dev/null ;;
+  esac
+}
+
+go() {
+  local h id
+  h=$(find_herd "$1"); [ -n "$h" ] || die "no herd: $1"
+  id=$(jq -r '.id' <<<"$h")
+  case $(jq -r '.backend' <<<"$h") in
+    herdr)
+      if window_up; then herdr-app do pane.focus "$(jq -cn --arg t "$id" '{terminal: $t}')" >/dev/null
+      else warn "herdr window isn't open; attach with: hc attach $id"; fi ;;
+    tmux)
+      if [ -n "${TMUX:-}" ]; then tmux switch-client -t "$id" && tmux select-window -t "$id" && tmux select-pane -t "$id"
+      else warn "attach with: tmux attach -t $(tmux display-message -p -t "$id" '#{session_name}')"; fi ;;
+  esac
+  printf '%s\n' "$h"
+}
+
+cmd_close() {
+  local h id
+  h=$(find_herd "${1:-}"); [ -n "$h" ] || die "no herd: ${1:-}"
+  id=$(jq -r '.id' <<<"$h")
+  case $(jq -r '.backend' <<<"$h") in
+    herdr) hc kill "$id" >/dev/null ;;
+    tmux)  tmux kill-pane -t "$id" ;;
+  esac
+  printf '%s\n' "$h"
+}
+
+case ${1:-} in
+  ""|-h|--help|help) usage ;;
+  ls) shift; cmd_ls "$@" ;;
+  stage) shift; cmd_stage "$@" ;;
+  report) shift; cmd_report "$@" ;;
+  go) shift; go "${1:?usage: herd go <key|name|id>}" ;;
+  close) shift; cmd_close "$@" ;;
+  start) shift; start "$@" ;;
+  *) start "$@" ;;
+esac

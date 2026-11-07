@@ -1,0 +1,5 @@
+{
+  "claude": { "argv": ["claude", "--permission-mode", "auto"], "task": "arg" },
+  "codex":  { "argv": ["codex"], "task": "arg" },
+  "pi":     { "argv": ["pi"], "task": "send" }
+}

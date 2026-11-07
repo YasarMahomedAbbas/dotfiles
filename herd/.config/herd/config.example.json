@@ -1,0 +1,5 @@
+{
+  "// what": "Copy to config.json (per machine, gitignored). backend: auto | herdr | hc | tmux | here — only used when herd is called from outside any terminal (timers, cron, keys).",
+  "backend": "auto",
+  "runner": "claude"
+}

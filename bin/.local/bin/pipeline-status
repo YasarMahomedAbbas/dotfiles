@@ -22,6 +22,11 @@
 
 set -u
 state="${1:-}"; label="${2:-}"
+
+# herd (docs/herd.md) is where a stage is recorded now, under herdr and tmux alike; the
+# ported skills call `herd stage` directly. This forwards for anything still calling us.
+if [ -n "$state" ] && command -v herd >/dev/null 2>&1; then herd stage "$label" "$state" || true; fi
+
 [ -z "${TMUX:-}" ] && exit 0
 
 # Resolve the session from THIS pane, not from the current client. `display-message -p`
