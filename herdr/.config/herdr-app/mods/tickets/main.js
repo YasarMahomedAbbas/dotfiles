@@ -11,7 +11,7 @@
 // project. As a pane, props { cwd } or { project } pin it.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { props, exec, spaces, panes, focused, terminals, theme, notify, nextCommand, home, readTextFile } from "herdr";
 
 const ROW_H = 26;
@@ -49,6 +49,7 @@ export default class Tickets extends View {
     this.confirm = null;      // ticket waiting on the Start confirm strip
     this.starting = new Set(); // ticket numbers whose herd is being started
     this.handle = cx.focus_handle();
+    this.scroll = VirtualListScrollHandle.new(); // so j/k keep the selection on screen
     this.input = InputState.new({ placeholder: "Search title or #number" });
     this.input.on("change", (_e, cx) => { this.query = this.input.value(); cx.notify(); });
     this.input.on("submit", (_e, cx) => { this.searching = false; this.handle.focus(); cx.notify(); });
@@ -261,7 +262,14 @@ export default class Tickets extends View {
     if (!rows.length) return;
     let i = rows.findIndex((r) => r.key === this.sel);
     i = i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + delta));
+    this.select(rows, i);
+  }
+
+  // Select row i and bring it on screen.
+  select(rows, i) {
+    if (!rows[i]) return;
     this.sel = rows[i].key;
+    this.scroll.scroll_to_item(i);
   }
 
   openOnGitHub(t) {
@@ -290,8 +298,8 @@ export default class Tickets extends View {
         if (cur) this.toggle(cur); break;
       case "j": case "down": case "ctrl-j": this.move(1); break;
       case "k": case "up": case "ctrl-k": this.move(-1); break;
-      case "g": this.sel = rows[0]?.key ?? null; break;
-      case "shift-g": this.sel = rows[rows.length - 1]?.key ?? null; break;
+      case "g": this.select(rows, 0); break;
+      case "shift-g": this.select(rows, rows.length - 1); break;
       case "space": case "z": if (cur && cur.kind !== "ticket") this.toggle(cur); break;
       case "p": if (this.data?.presets.length) { this.preset = (this.preset + 1) % this.data.presets.length; this.savePreset(); } break;
       case "shift-p": if (this.data?.presets.length) { this.preset = (this.preset + this.data.presets.length - 1) % this.data.presets.length; this.savePreset(); } break;
@@ -370,7 +378,10 @@ export default class Tickets extends View {
     if (!d && this.error) body = div().p(14).text_color(t.muted).child(this.error);
     else if (!d) body = div().p(14).text_color(t.dim).child("Loading the board…");
     else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.query ? "Nothing matches" : "No tickets in this preset");
-    else body = v_flex().id("tickets-list").flex_1().min_h(0).overflow_y_scrollbar().px(4).py(2).children(rows.map((r, i) => row(r, i)));
+    else body = div().flex_1().min_h(0).relative().px(4).py(2)
+      .child(v_virtual_list("tickets-list", rows.length, ROW_H, (i) => rows[i].key,
+        (range) => rows.slice(range.start, range.end).map((r, k) => row(r, range.start + k))).track_scroll(this.scroll).size_full())
+      .child(Scrollbar.vertical("tickets-list").viewport_from_layout().absolute().inset_0());
 
     return v_flex().id("tickets").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_mouse_down("left", () => { if (!this.searching) this.handle.focus(); })

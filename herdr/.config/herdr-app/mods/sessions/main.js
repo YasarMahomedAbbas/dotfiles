@@ -1,5 +1,5 @@
 // Session picker for C-f s (a simple herdr take on sesh).
-// Three groups: Open (spaces already running), Projects (projects.json, not yet
+// Three groups: Open (spaces already running), Projects (herd's projects.json plus this mod's, not yet
 // open) and Recent (zoxide's folders, most used first). Picking an open space
 // switches to it; picking a project or folder opens a space there with `claude`
 // running. Type to filter, ↑/↓, ctrl-j/ctrl-k or ctrl-n/ctrl-p to move, Enter to go, Esc to close.
@@ -34,8 +34,17 @@ export default class Sessions extends View {
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       try {
+        // herd's projects (~/.config/herd/projects.json: root + workdir) first, then this
+        // mod's projects.json for folders that aren't herd projects (dotfiles, vault…).
+        // A name in both: this file's path wins.
+        const herdText = await readTextFile(home() + "/.config/herd/projects.json").catch(() => null);
+        const fromHerd = Object.entries(JSON.parse(herdText ?? "{}"))
+          .filter(([name, p]) => !name.startsWith("//") && p?.root)
+          .map(([name, p]) => ({ name, path: norm(expand(p.workdir ? `${norm(p.root)}/${p.workdir}` : p.root)) }));
         const text = await readTextFile(appHome() + "/mods/sessions/projects.json");
-        this.projects = (JSON.parse(text ?? "{}").projects ?? []).map((p) => ({ name: p.name, path: norm(expand(p.path)) }));
+        const own = (JSON.parse(text ?? "{}").projects ?? []).map((p) => ({ name: p.name, path: norm(expand(p.path)) }));
+        const ownNames = new Set(own.map((p) => p.name.toLowerCase()));
+        this.projects = [...fromHerd.filter((p) => !ownNames.has(p.name.toLowerCase())), ...own];
         // Each project's repo root (travelsmart's Frontend -> travel-smart): Recent hides
         // anything at or under it. Not a git repo: the project folder itself.
         this.roots = this.projects.map((p) => p.path);

@@ -1,11 +1,17 @@
 {
-  "// what": "Predefined herdr sessions for C-f s. Picking one opens a space named <name> in <path> with claude running (or switches to it if it's already open). Separate from ~/.config/sesh/sesh.toml (tmux).",
+  "// what": "Extra herdr sessions for C-f s, on top of herd's projects (~/.config/herd/projects.json, root + workdir). Put folders here that aren't herd projects; a name in both uses this path. Picking one opens a space named <name> in <path> with claude running (or switches to it if it's already open).",
   "projects": [
-    { "name": "dotfiles",    "path": "~/projects/personal/dotfiles" },
-    { "name": "prepahead",   "path": "~/projects/personal/prepahead" },
-    { "name": "equipx",      "path": "~/projects/personal/EquipX" },
-    { "name": "travelsmart", "path": "~/projects/org/whitewolfstudios/travel-smart/Frontend" },
-    { "name": "gegrond",     "path": "~/projects/personal/gegrond-ai/frontend" },
-    { "name": "vault",       "path": "~/projects/vault/My-Vault" }
+    {
+      "name": "dotfiles",
+      "path": "~/projects/personal/dotfiles"
+    },
+    {
+      "name": "gegrond",
+      "path": "~/projects/personal/gegrond-ai/frontend"
+    },
+    {
+      "name": "vault",
+      "path": "~/projects/vault/My-Vault"
+    }
   ]
 }
