@@ -137,7 +137,9 @@ list_herds() {
       select(.state == "live") | select((.labels // {})["herd.name"]) |
       { id: .address, backend: "herdr", name: .labels["herd.name"], key: (.labels["herd.key"] // ""),
         desc: (.labels["herd.desc"] // ""), stage: (.labels["herd.stage"] // ""),
-        state: (.labels["herd.state"] // .status // ""), status: (.status // ""),
+        state: (.labels["herd.state"] // (.status | if type == "object" then .state else . end) // ""),
+        status: ((.status | if type == "object" then .state else . end) // ""),
+        activity: ((.status | if type == "object" then .msg else null end) // ""),
         group: (.labels["herd.group"] // ""), cwd: (.cwd // ""), labels: (.labels // {}) }' || true
   fi
   if have tmux && tmux list-sessions >/dev/null 2>&1; then
