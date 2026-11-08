@@ -3,12 +3,16 @@
 // a parent shows its done/total. A ticket with an `issue-<n>` tab shows that tab's
 // live state. Keys: j/k (or ↑/↓, ctrl-j/ctrl-k) move, Enter/space folds a group,
 // p cycles presets, / searches, r refreshes, o opens the ticket on GitHub.
+// Start ▸ (Enter or s on a ticket, or the button on the selected row) asks, then runs
+// `herd --recipe ticket -- "#<n>"` from the board's folder, detached: the recipe can
+// outlast a mod's 30 s exec limit, so its output goes to a log that's watched for the
+// exit code. A ticket with a live herd shows Go ▸ instead (`herd go <key>`).
 // In the sidebar (no props) it follows the focused terminal's folder, which picks the
 // project. As a pane, props { cwd } or { project } pin it.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { props, exec, spaces, panes, focused, terminals, theme, notify, nextCommand } from "herdr";
+import { props, exec, spaces, panes, focused, terminals, theme, notify, nextCommand, home, readTextFile } from "herdr";
 
 const ROW_H = 26;
 const LIVE = { working: ["working", "ansi3"], blocked: ["needs you", "ansi1"], done: ["done", "ansi2"], idle: ["idle", "dim"] };
@@ -42,6 +46,8 @@ export default class Tickets extends View {
     this.sel = null;          // row key
     this.query = "";
     this.searching = false;
+    this.confirm = null;      // ticket waiting on the Start confirm strip
+    this.starting = new Set(); // ticket numbers whose herd is being started
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Search title or #number" });
     this.input.on("change", (_e, cx) => { this.query = this.input.value(); cx.notify(); });
@@ -129,9 +135,62 @@ export default class Tickets extends View {
       const st = l["herd.state"] === "blocked" || status === "blocked" ? "blocked"
         : l["herd.state"] === "done" || status === "done" ? "done"
         : status === "working" ? "working" : "idle";
-      out[l["ticket.ref"]] = st;
+      out[l["ticket.ref"]] = { st, key: l["herd.key"] ?? null };
     }
     return out;
+  }
+
+  // Start ▸ step 1: the confirm strip. A ticket with a live herd goes there instead.
+  askStart(tk, cx) {
+    const live = this.liveStates()[String(tk.number)];
+    if (live?.key) return this.goTo(live.key);
+    if (this.starting.has(tk.number)) return;
+    this.confirm = tk;
+    this.handle.focus();
+  }
+
+  goTo(key) {
+    exec("herd", ["go", key], this.cwd ? { cwd: this.cwd } : {})
+      .then((r) => { if (r.code !== 0) notify({ title: "herd go", body: (r.stderr || r.stdout).trim(), level: "error" }); })
+      .catch((e) => notify({ title: "herd go", body: String(e), level: "error" }));
+  }
+
+  // Start ▸ step 2: run the ticket recipe detached, then watch its log for the exit code.
+  start(tk, cx) {
+    this.confirm = null;
+    if (!this.cwd) { notify({ title: "Start pipeline", body: "No folder to start from", level: "error" }); return; }
+    const n = tk.number;
+    const log = `${home()}/.cache/herd/start-${(this.data?.project ?? "board").replace(/[^\w.-]/g, "_")}-${n}.log`;
+    const script = 'mkdir -p "${2%/*}"; herd --recipe ticket -- "$1" >"$2" 2>&1; echo "herd-exit=$?" >>"$2"';
+    this.starting.add(n);
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("setsid", ["-f", "sh", "-c", script, "start", "#" + n, log], { cwd: this.cwd });
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout).trim() || `exit ${r.code}`);
+      } catch (e) {
+        this.starting.delete(n);
+        notify({ title: `#${n}: couldn't start herd`, body: String(e), level: "error" });
+        cx.notify();
+        return;
+      }
+      notify({ title: `Starting #${n}`, body: tk.title, timeout: 2500 });
+      cx.notify();
+      const began = Date.now();
+      const watch = cx.timer.every(2000, (cx) => {
+        readTextFile(log).then((text) => {
+          const m = /herd-exit=(\d+)\s*$/.exec(text ?? "");
+          if (!m && Date.now() - began < 10 * 60 * 1000) return;
+          watch.cancel();
+          this.starting.delete(n);
+          if (!m) notify({ title: `#${n}: herd is taking long`, body: "See " + log, level: "warning" });
+          else if (m[1] !== "0") {
+            const tail = (text ?? "").replace(/herd-exit=\d+\s*$/, "").trim().split("\n").slice(-4).join("\n");
+            notify({ title: `#${n}: herd failed`, body: tail || "See " + log, level: "error" });
+          }
+          cx.notify();
+        }).catch(() => {});
+      });
+    });
   }
 
   rows() {
@@ -214,14 +273,26 @@ export default class Tickets extends View {
       if (e.keystroke === "escape") { this.searching = false; this.query = ""; this.input.set_value?.(""); this.handle.focus(); cx.stop_propagation(); cx.notify(); }
       return;
     }
+    if (this.confirm) {
+      switch (e.keystroke) {
+        case "enter": case "y": this.start(this.confirm, cx); break;
+        case "escape": case "n": case "q": this.confirm = null; break;
+        default: return;
+      }
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     const rows = this.rows();
     const cur = rows.find((r) => r.key === this.sel);
     switch (e.keystroke) {
+      case "enter": case "s": if (cur?.kind === "ticket") { this.askStart(cur.t, cx); break; } if (e.keystroke === "s") return;
+        if (cur) this.toggle(cur); break;
       case "j": case "down": case "ctrl-j": this.move(1); break;
       case "k": case "up": case "ctrl-k": this.move(-1); break;
       case "g": this.sel = rows[0]?.key ?? null; break;
       case "shift-g": this.sel = rows[rows.length - 1]?.key ?? null; break;
-      case "enter": case "space": case "z": if (cur && cur.kind !== "ticket") this.toggle(cur); break;
+      case "space": case "z": if (cur && cur.kind !== "ticket") this.toggle(cur); break;
       case "p": if (this.data?.presets.length) { this.preset = (this.preset + 1) % this.data.presets.length; this.savePreset(); } break;
       case "shift-p": if (this.data?.presets.length) { this.preset = (this.preset + this.data.presets.length - 1) % this.data.presets.length; this.savePreset(); } break;
       case "r": this.refresh(cx, true); break;
@@ -283,8 +354,15 @@ export default class Tickets extends View {
           .child(`${tk.sub_done}/${tk.sub_issues.length}`));
       }
       if (tk.parent) el = el.child(div().flex_none().px(5).rounded(8).border_1().border_color(t.border).text_size(10.5).text_color(t.dim).child("↑ #" + tk.parent));
-      const st = live[String(tk.number)];
-      if (st) { const [w, c] = LIVE[st] ?? [st, "dim"]; el = el.child(h_flex().flex_none().gap(5).items_center().text_size(11).text_color(t.dim).child(div().size(7).rounded(4).bg(t[c] ?? t.dim)).child(w)); }
+      const lv = live[String(tk.number)];
+      if (lv) { const [w, c] = LIVE[lv.st] ?? [lv.st, "dim"]; el = el.child(h_flex().flex_none().gap(5).items_center().text_size(11).text_color(t.dim).child(div().size(7).rounded(4).bg(t[c] ?? t.dim)).child(w)); }
+      else if (this.starting.has(tk.number)) el = el.child(div().flex_none().text_size(11).text_color(t.dim).child("starting…"));
+      if (r.key === this.sel && !this.starting.has(tk.number) && (!lv || lv.key)) {
+        el = el.child(h_flex().id("go:" + r.key).flex_none().h(18).px(7).items_center().rounded(4).border_1().border_color(t.accent)
+          .text_size(11).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.askStart(tk, cx); cx.notify(); })
+          .child(lv ? "Go ▸" : "Start ▸"));
+      }
       return el;
     };
 
@@ -301,7 +379,19 @@ export default class Tickets extends View {
       .when(Boolean(search), (e) => e.child(search))
       .when(Boolean(d && this.error), (e) => e.child(div().flex_none().px(12).py(4).text_size(11).text_color(t.ansi1).child(this.error)))
       .child(body)
+      .when(Boolean(this.confirm), (e) => {
+        const tk = this.confirm;
+        const btn = (id, label, primary, onClick) => h_flex().id(id).h(24).px(10).items_center().rounded(6).cursor_pointer()
+          .border_1().border_color(primary ? t.accent : t.border).bg(primary ? t.accent : t.raised)
+          .text_color(primary ? t.background : t.foreground).text_size(11.5).hover((s) => s.opacity(0.88)).on_click(onClick).child(label);
+        return e.child(v_flex().flex_none().px(12).py(8).gap(6).border_t(1).border_color(t.accent).bg(t.raised)
+          .child(div().truncate().text_color(t.foreground).font_medium().child(`#${tk.number} ${tk.title}`))
+          .child(div().text_size(11.5).text_color(t.muted).child(`Starts ${d?.skill ? "/" + d.skill + " " : "the pipeline on "}#${tk.number} in a herd (new tab, worktree included)`))
+          .child(h_flex().gap(8).justify_end()
+            .child(btn("confirm-no", "Cancel  esc", false, (_e, cx) => { this.confirm = null; cx.notify(); }))
+            .child(btn("confirm-yes", "Start pipeline  ⏎", true, (_e, cx) => { this.start(tk, cx); cx.notify(); }))));
+      })
       .child(h_flex().flex_none().h(22).px(12).items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(t.dim)
-        .child("j/k move · enter fold · p preset · / search · r refresh · o GitHub"));
+        .child("j/k move · ⏎ start/fold · p preset · / search · r refresh · o GitHub"));
   }
 }
