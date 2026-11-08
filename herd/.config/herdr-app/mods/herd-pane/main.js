@@ -40,7 +40,7 @@ export default class HerdPane extends View {
       .text_color(t.dim)
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { cx.stop_propagation(); run(command, args); })
-      .child(svg(`mods/herd-pane/${ic}.svg`).size(14));
+      .child(svg(`my-icons/herd-pane/${ic}.svg`).size(14));
   }
 
   status(t, st) {
