@@ -8,10 +8,11 @@
 // tab or 1/2/3 switch view, h shows/hides done, o opens the linked vault note, r refreshes.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { exec, theme, notify, nextCommand, home } from "herdr";
 
 const ROW_H = 26;
+const HEAD_H = 30;
 const VIEWS = [["today", "Today"], ["week", "Week"], ["someday", "Someday"]];
 const POLL_MS = 60 * 1000;
 const VAULT = "My-Vault";
@@ -39,6 +40,7 @@ export default class Todos extends View {
     this.sel = null;
     this.adding = false;
     this.handle = cx.focus_handle();
+    this.scroll = VirtualListScrollHandle.new(); // so j/k keep the selection on screen
     this.input = InputState.new({ placeholder: "Add…  e.g. 17:30 call mum, fri buy stamps" });
     this.input.on("submit", (_e, cx) => this.add(cx));
     try {
@@ -119,7 +121,15 @@ export default class Todos extends View {
     if (!rows.length) return;
     let i = rows.findIndex((r) => r.key === this.sel);
     i = i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + delta));
-    this.sel = rows[i].key;
+    this.select(rows[i]);
+  }
+
+  // Select an item row and bring it on screen (the list also holds headings and events).
+  select(r) {
+    if (!r) return;
+    this.sel = r.key;
+    const i = this.rows().findIndex((x) => x.key === r.key);
+    if (i >= 0) this.scroll.scroll_to_item(i);
   }
 
   tick(it, cx) {
@@ -175,8 +185,8 @@ export default class Todos extends View {
     switch (e.keystroke) {
       case "j": case "down": case "ctrl-j": this.move(1); break;
       case "k": case "up": case "ctrl-k": this.move(-1); break;
-      case "g": this.sel = rows[0]?.key ?? null; break;
-      case "shift-g": this.sel = rows[rows.length - 1]?.key ?? null; break;
+      case "g": this.select(rows[0]); break;
+      case "shift-g": this.select(rows[rows.length - 1]); break;
       case "x": case "space": case "enter": this.tick(cur, cx); break;
       case "a": this.adding = true; this.input.focus(); break;
       case "tab": this.setView(this.view + 1, cx); break;
@@ -218,7 +228,7 @@ export default class Todos extends View {
 
     const row = (r) => {
       if (r.kind === "head") {
-        return h_flex().id(r.key).h(ROW_H).px(8).mt(4).gap(7).items_center()
+        return h_flex().id(r.key).h(HEAD_H).px(8).pt(4).gap(7).items_center()
           .child(div().flex_none().font_semibold().text_color(r.tone ? t[r.tone] ?? t.foreground : t.foreground).child(r.label))
           .when(r.count > 0, (e) => e.child(div().flex_none().text_size(11.5).text_color(t.dim).child(String(r.count))));
       }
@@ -251,7 +261,10 @@ export default class Todos extends View {
     if (!d && this.error) body = div().p(14).text_color(t.muted).child(this.error);
     else if (!d) body = div().p(14).text_color(t.dim).child("Loading your list…");
     else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.name === "today" ? "Nothing left for today" : "Nothing here");
-    else body = v_flex().id("todos-list").flex_1().min_h(0).overflow_y_scrollbar().px(4).py(2).children(rows.map(row));
+    else body = div().flex_1().min_h(0).relative().px(4).py(2)
+      .child(v_virtual_list("todos-list", rows.length, rows.map((r) => (r.kind === "head" ? HEAD_H : ROW_H)), (i) => rows[i].key,
+        (range) => rows.slice(range.start, range.end).map(row)).track_scroll(this.scroll).size_full())
+      .child(Scrollbar.vertical("todos-list").viewport_from_layout().absolute().inset_0());
 
     return v_flex().id("todos").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_mouse_down("left", () => { if (!this.adding) this.handle.focus(); })
