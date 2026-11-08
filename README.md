@@ -19,6 +19,8 @@ dotfiles/
   gh-dash/    → ~/.config/gh-dash/
   herd/       → ~/.local/bin/herd, ~/.config/herd/, ~/.claude/skills/herd, ~/.codex/skills/herd,
                ~/.config/herdr-app/mods/herd-pane   ("do X in a herd": start an agent in a tab/pane; see docs/herd.md)
+  herdr/      → ~/.config/herdr-app/{keys.json, layouts/herd.json, mods/{tmux-prefix,sessions,tickets,my-tabs}}
+               (my herdr setup: Ctrl+F prefix, session picker, tickets sidebar; herdr itself is installed separately)
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/
@@ -57,7 +59,7 @@ Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works 
 
 ```bash
 # universal (both machines)
-stow bin gh-dash ghostty git fish herd lazygit nvim sesh starship tmux
+stow bin gh-dash ghostty git fish herd herdr lazygit nvim sesh starship tmux
 # Hyprland desktop only
 stow hypr waybar mako wofi streamdeck   # streamdeck also needs a one-time setup (see Stream Deck)
 ```
