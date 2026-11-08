@@ -147,6 +147,13 @@
                       "content": {
                         "mod": "tickets"
                       }
+                    },
+                    {
+                      "id": "todos",
+                      "type": "block",
+                      "content": {
+                        "mod": "todos"
+                      }
                     }
                   ],
                   "active": "files"

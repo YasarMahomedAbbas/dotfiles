@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# herdr won't load an svg()/image() asset through a symlink, and stow makes every mod
+# folder a symlink. So copy each stowed mod's icons into ~/.config/herdr-app/my-icons/<mod>/
+# as real files, and mods reference "my-icons/<mod>/<file>". Run after `stow herdr`/`stow herd`
+# and whenever an icon changes.
+set -euo pipefail
+H="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
+out="$H/my-icons"
+for link in "$H"/mods/*; do
+  [ -L "$link" ] || continue
+  mod=$(basename "$link")
+  shopt -s nullglob; icons=("$link"/*.svg "$link"/*.png); shopt -u nullglob
+  [ ${#icons[@]} -gt 0 ] || continue
+  rm -rf "${out:?}/$mod"; mkdir -p "$out/$mod"
+  cp -L "${icons[@]}" "$out/$mod/"
+  echo "my-icons/$mod: ${#icons[@]} icon(s)"
+done

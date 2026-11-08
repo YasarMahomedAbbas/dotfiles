@@ -19,8 +19,10 @@ dotfiles/
   gh-dash/    → ~/.config/gh-dash/
   herd/       → ~/.local/bin/herd, ~/.config/herd/, ~/.claude/skills/herd, ~/.codex/skills/herd,
                ~/.config/herdr-app/mods/herd-pane   ("do X in a herd": start an agent in a tab/pane; see docs/herd.md)
-  herdr/      → ~/.config/herdr-app/{keys.json, layouts/herd.json, mods/{tmux-prefix,sessions,tickets,my-tabs}}
-               (my herdr setup: Ctrl+F prefix, session picker, tickets sidebar; herdr itself is installed separately)
+  herdr/      → ~/.config/herdr-app/{keys.json, layouts/herd.json, mods/{tmux-prefix,sessions,tickets,todos,my-tabs}},
+               ~/.local/bin/herdr-icons   (my herdr setup: Ctrl+F prefix, session picker, tickets and todos sidebar views;
+               herdr itself is installed separately. herdr won't load icons through a symlink, so run `herdr-icons`
+               after stowing herdr/herd and whenever an icon changes: it copies them to ~/.config/herdr-app/my-icons/)
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/

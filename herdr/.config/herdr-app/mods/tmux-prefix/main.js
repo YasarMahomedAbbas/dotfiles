@@ -18,7 +18,20 @@ function rename(kind, f) {
     command: { name: `${kind}.rename`, args: { id: item.id } } } });
 }
 
-// Every binding here comes from ~/.tmux.conf.
+// A view in the right-hand sidebar (where Files and Changes live): show it, or hide the
+// sidebar when it's already showing.
+function togglePanel(child, title) {
+  const find = (n, id) => (!n ? null : n.id === id ? n : (n.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null);
+  const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+  if (!panel || !(body?.children ?? []).some((c) => c.id === child)) {
+    notify({ title, body: `This layout has no ${child} view; switch to the herd layout`, level: "warning" });
+    return;
+  }
+  if (!panel.hidden && body.active === child) run("layout.hide", { id: "panel" });
+  else { run("layout.select", { stack: "panel-body", child }); run("layout.show", { id: "panel" }); }
+}
+
+// Every binding here comes from ~/.tmux.conf, except t and d (my sidebar views).
 const BINDINGS = {
   c: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   V: ["split side by side", (f) => run("terminal.open", { place: "right", ...(f?.cwd ? { folder: f.cwd } : {}) })],
@@ -28,18 +41,8 @@ const BINDINGS = {
   k: ["pane up", () => run("pane.go", { direction: "up" })],
   l: ["pane right", () => run("pane.go", { direction: "right" })],
   x: ["close pane", () => run("pane.close", {})],
-  t: ["tickets panel", () => {
-    // The right-hand sidebar (where Files and Changes live), as a third view.
-    const find = (n) => (!n ? null : n.id === "panel" ? n : (n.children ?? []).map(find).find(Boolean) ?? null);
-    const findBody = (n) => (!n ? null : n.id === "panel-body" ? n : (n.children ?? []).map(findBody).find(Boolean) ?? null);
-    const root = layout(), panel = find(root), body = findBody(root);
-    if (!panel || !(body?.children ?? []).some((c) => c.id === "tickets")) {
-      notify({ title: "Tickets", body: "This layout has no tickets view; switch to the herd layout", level: "warning" });
-      return;
-    }
-    if (!panel.hidden && body.active === "tickets") run("layout.hide", { id: "panel" });
-    else { run("layout.select", { stack: "panel-body", child: "tickets" }); run("layout.show", { id: "panel" }); }
-  }],
+  t: ["tickets panel", () => togglePanel("tickets", "Tickets")],
+  d: ["todos panel", () => togglePanel("todos", "Todos")],
   s: ["session picker", () => run("mod.open", { name: "sessions" })],
   ",": ["rename window", (f) => rename("tab", f)],
   "$": ["rename session", (f) => rename("space", f)],
@@ -97,6 +100,7 @@ export default class TmuxPrefix extends View {
         .child(chip("x", "close pane"))
         .child(chip("s", "sessions"))
         .child(chip("t", "tickets"))
+        .child(chip("d", "todos"))
         .child(chip(",", "rename"))
         .child(chip("$", "rename session"))
         .child(chip("C-f", "send C-f")));
