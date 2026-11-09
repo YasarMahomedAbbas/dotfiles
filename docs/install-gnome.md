@@ -75,7 +75,7 @@ chsh -s $(which fish)
 GNOME floats windows by default. [**Tiling Shell**](https://github.com/domferr/tilingshell)
 is the GNOME extension that gets you the Hyprland feel — auto-tiling, gaps, Nord window
 borders, and vim `hjkl` focus/move. The keybinds are mapped 1:1 from
-`hypr/.config/hypr/hyprland.conf` onto GNOME's dconf + the extension's own settings.
+`hypr/.config/hypr/hyprland.lua` onto GNOME's dconf + the extension's own settings.
 
 **Install the extension** (CLI; no browser needed):
 
@@ -123,7 +123,7 @@ gaps and `hjkl` focus activate once the extension loads on login.
 | `Super+1..0` workspace | switch-to-workspace 1..10 | `Super+1..0` |
 | `Super+Shift+1..0` move-to-ws | move-to-workspace 1..10 | `Super+Shift+1..0` |
 
-**Tuned to match `hyprland.conf`:** auto-tiling on, `inner-gaps=4` / `outer-gaps=8`
+**Tuned to match `hyprland.lua`:** auto-tiling on, `inner-gaps=4` / `outer-gaps=8`
 (= `gaps_in`/`gaps_out`), `2px` Nord-cyan border `#88C0D0` (= `col.active_border` nord8),
 blur on tile previews. Tweak any of it in **Tiling Shell → Settings** or by editing
 `gnome/apply-keybinds.sh`.

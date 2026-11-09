@@ -14,7 +14,7 @@ Item {
     readonly property var actions: [
         { icon: "󰌾", label: "Lock",     accent: Colors.blue,   cmd: ["loginctl", "lock-session"] },
         { icon: "󰤄", label: "Suspend",  accent: Colors.teal,   cmd: ["systemctl", "suspend"] },
-        { icon: "󰍃", label: "Logout",   accent: Colors.yellow, cmd: ["hyprctl", "dispatch", "exit"] },
+        { icon: "󰍃", label: "Logout",   accent: Colors.yellow, cmd: ["hyprctl", "dispatch", "hl.dsp.exit()"] },
         { icon: "󰜉", label: "Reboot",   accent: Colors.orange, cmd: ["systemctl", "reboot"] },
         { icon: "󰐥", label: "Shutdown", accent: Colors.red,    cmd: ["systemctl", "poweroff"] },
     ]

@@ -36,7 +36,7 @@ Each app's committed config stays static and pulls colors from `~/.config/theme/
 | App      | Include mechanism                                            | Reload |
 |----------|-------------------------------------------------------------|--------|
 | ghostty  | `config-file = ?~/.config/theme/ghostty.conf`               | `ctrl+shift+,` (or new window) |
-| hyprland | `source = ~/.config/theme/hypr-colors.conf` (`$nordN`)      | live (`hyprctl reload`) |
+| hyprland | `dofile("~/.config/theme/hypr-colors.lua")` (`colors.nordN`) | live (`hyprctl reload`) |
 | hyprlock | `source = ~/.config/theme/hyprlock-colors.conf` (`$lock_*`) | next lock |
 | waybar   | GTK CSS `@import` of `gtk-colors.css` (`@define-color`)      | live (`SIGUSR2`) |
 | wofi     | GTK CSS `@import` of `gtk-colors.css`                        | next launch |

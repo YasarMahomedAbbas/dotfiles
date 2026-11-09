@@ -1,0 +1,8 @@
+{
+  "name": "agent-board",
+  "version": "0.1.0",
+  "description": "Writes a per-session status file (~/.cache/claude-board/<pane>.json) for the agent board: state, attention, current tool, agents, shells, tasks and designs.",
+  "author": {
+    "name": "yasarmahomedabbas"
+  }
+}

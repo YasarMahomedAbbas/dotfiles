@@ -25,11 +25,15 @@ Singleton {
     property color blue:    "#81a1c1"
     property color teal:    "#8fbcbb"
     property color red:     "#bf616a"
+    property color attn:    "#e0703a"   // needs you (agent board), every theme
     property color orange:  "#d08770"
     property color yellow:  "#ebcb8b"
     property color green:   "#a3be8c"
     property color purple:  "#b48ead"
     property color muted:   "#3b4252"
+
+    // `c` at opacity `a` — for tints and soft fills of the palette colours
+    function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
 
     function apply(data) {
         for (var k in data)

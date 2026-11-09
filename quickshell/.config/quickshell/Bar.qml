@@ -9,8 +9,13 @@ PanelWindow {
     // Popup state — only one open at a time
     property bool dashboardOpen: false
     property bool powerOpen:     false
+    // Agent board (docs/agent-board.md)
+    property bool wallOpen:      false    // SUPER+G
+    property bool focusOpen:     false    // SUPER+Shift+G
+    property bool keysOpen:      false
+    property string boardKey: ""          // session the wall / focus view opens on
 
-    readonly property bool anyPopupOpen: dashboardOpen || powerOpen
+    readonly property bool anyPopupOpen: dashboardOpen || powerOpen || wallOpen || focusOpen || keysOpen
 
     // Take keyboard focus only while a popup is open, so Escape can close it
     // without the bar stealing focus the rest of the time.
@@ -27,6 +32,9 @@ PanelWindow {
     function closeAll() {
         dashboardOpen = false
         powerOpen     = false
+        wallOpen      = false
+        focusOpen     = false
+        keysOpen      = false
     }
 
     // Toggle the dashboard popup; ensure the bar is visible when opening it
@@ -38,11 +46,42 @@ PanelWindow {
         dashboardOpen = !was
     }
 
+    // Agent board popups: each toggles itself, closes whatever else is open,
+    // and re-shows the bar if it was hidden (so the keybinds always work).
+    function toggleWall(key) {
+        var was = wallOpen
+        closeAll()
+        if (!was) { visible = true; boardKey = key || "" }
+        wallOpen = !was
+    }
+    function toggleFocus(key) {
+        var was = focusOpen
+        closeAll()
+        if (!was) { visible = true; boardKey = key || "" }
+        focusOpen = !was
+    }
+    function toggleKeys() {
+        var was = keysOpen
+        closeAll()
+        if (!was) visible = true
+        keysOpen = !was
+    }
+
     readonly property int barH: 42
+    readonly property int screenH: screen ? screen.height : 1440
+    readonly property int bigPopupMaxH: screenH - barH - 40
+
+    // Distance from the screen's right edge to the agents island's right edge:
+    // the toast hangs from there.
+    readonly property real agentsRight: agentsIsland.visible
+        ? 10 + rightGroup.width - (agentsIsland.x + agentsIsland.width) : 10
 
     readonly property int activePopupH: {
         if (dashboardOpen) return dashboardPopup.implicitHeight + 12
         if (powerOpen)     return powerPopup.implicitHeight     + 12
+        if (wallOpen)      return wallPopup.implicitHeight      + 12
+        if (focusOpen)     return focusPopup.implicitHeight     + 12
+        if (keysOpen)      return keysPopup.implicitHeight      + 12
         return 0
     }
 
@@ -83,30 +122,49 @@ PanelWindow {
             }
         }
 
-        // Right group — system cluster island
-        Island {
-            id: rightIsland
+        // Right group — agents island, keys hint, system cluster island
+        RowLayout {
+            id: rightGroup
             anchors { right: parent.right; rightMargin: 10; verticalCenter: parent.verticalCenter }
+            spacing: 8
 
-            RowLayout {
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 14
+            // Agent board: a pip strip per pipeline, counts for the rest, live stack.
+            // Hidden until the `board` CLI answers.
+            AgentsIsland {
+                id: agentsIsland
+                visible: Board.available
+                open: root.wallOpen || root.focusOpen
+                onToggleWall: root.toggleWall("")
+            }
 
-                Media   {}
-                Volume  {}
-                Network {}
-                SysStats{}
-                Battery {}
+            // "⊞ /" — opens the keys cheatsheet
+            KeysHint {
+                onToggleKeys: root.toggleKeys()
+            }
 
-                Weather {
-                    onToggleWeather: root.toggleDashboard()
-                }
+            Island {
+                id: rightIsland
 
-                PowerButton {
-                    onTogglePower: {
-                        var was = root.powerOpen
-                        root.closeAll()
-                        root.powerOpen = !was
+                RowLayout {
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 14
+
+                    Media   {}
+                    Volume  {}
+                    Network {}
+                    SysStats{}
+                    Battery {}
+
+                    Weather {
+                        onToggleWeather: root.toggleDashboard()
+                    }
+
+                    PowerButton {
+                        onTogglePower: {
+                            var was = root.powerOpen
+                            root.closeAll()
+                            root.powerOpen = !was
+                        }
                     }
                 }
             }
@@ -150,6 +208,64 @@ PanelWindow {
             Behavior on opacity { NumberAnimation { duration: 160 } }
             Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
             onClosePopup: root.closeAll()
+        }
+
+        // The wall — centred, most of the screen
+        Wall {
+            id: wallPopup
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 4
+            width: Math.min(parent.width * 0.94, 1400)
+            maxHeight: root.bigPopupMaxH
+            focusKey: root.boardKey
+            active: root.wallOpen
+            visible: root.wallOpen
+            opacity: root.wallOpen ? 1 : 0
+            y: root.wallOpen ? 0 : -8
+            Behavior on opacity { NumberAnimation { duration: 160 } }
+            Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
+            onRequestClose: root.closeAll()
+            onOpenFocus: function (key) { root.toggleFocus(key) }
+            onOpenKeys: root.toggleKeys()
+        }
+
+        // List + focus — centred
+        Focus {
+            id: focusPopup
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 4
+            width: Math.min(parent.width * 0.94, 1400)
+            height: implicitHeight
+            maxHeight: root.bigPopupMaxH
+            focusKey: root.boardKey
+            active: root.focusOpen
+            visible: root.focusOpen
+            opacity: root.focusOpen ? 1 : 0
+            y: root.focusOpen ? 0 : -8
+            Behavior on opacity { NumberAnimation { duration: 160 } }
+            Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
+            onRequestClose: root.closeAll()
+            onOpenWall: function (key) { root.toggleWall(key) }
+            onOpenKeys: root.toggleKeys()
+        }
+
+        // Keys cheatsheet — centred
+        KeysCheatsheet {
+            id: keysPopup
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.top
+            anchors.topMargin: 4
+            width: Math.min(parent.width * 0.9, 1500)
+            maxHeight: root.bigPopupMaxH
+            active: root.keysOpen
+            visible: root.keysOpen
+            opacity: root.keysOpen ? 1 : 0
+            y: root.keysOpen ? 0 : -8
+            Behavior on opacity { NumberAnimation { duration: 160 } }
+            Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutQuint } }
+            onRequestClose: root.closeAll()
         }
     }
 
