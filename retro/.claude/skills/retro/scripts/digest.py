@@ -303,7 +303,7 @@ def digest(args):
             if s["interrupts"]:
                 print(f"  interrupts: {s['interrupts']}")
             if s["permission_prompts"]:
-                print(f"  permission prompts answered: {s['permission_prompts']}")
+                print(f"  prompts the user answered (questions or permissions): {s['permission_prompts']}")
             for x in s["denied"][:4]:
                 print(f"  denied: {clip(x, 220)}")
             for k, v in s["errors"].most_common(5):

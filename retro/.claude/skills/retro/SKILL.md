@@ -39,7 +39,8 @@ $D --since <ISO or span> [--project <name>] --top 8 --json <scratchpad>/digest.j
 Read `digest.md`. It groups sessions into **units** — a herd ticket run (`travelsmart#2158`, the worktree's
 sessions: pipeline stages, reviews, resumes) or a project — ranked by a friction score, and lists per session:
 your prompts flagged as `maybe correction`, interrupts, denied tool calls, tool errors by kind, commands repeated
-3+ times, outputs over 15k chars, permission prompts the user answered, skills run, PRs, cost. Sessions that ran
+3+ times, outputs over 15k chars, prompts the user answered (AskUserQuestion answers and permission prompts —
+mostly the former: gates that needed the user), skills run, PRs, cost. Sessions that ran
 `/retro` are excluded. The score only orders the reading; it is not a verdict.
 
 Before any deep read, scan across units for **patterns**: the same error kind, denial or big-output command in
@@ -56,7 +57,8 @@ Give each to a subagent (in parallel, one message). Brief each with: the unit, i
 in step 4, and this:
 
 > Read the sessions with `~/.claude/skills/retro/scripts/digest.py --read <session-id>` (compact transcript,
-> subagents included; `--max-chars` to see more). Find the moments where the agent lost time, got it wrong, or
+> subagents included; `--max-chars` to see more). Read its output directly, or save it under a name that
+> includes the session id: other deep reads run in parallel in the same scratchpad. Find the moments where the agent lost time, got it wrong, or
 > needed the user — and the cause in its environment: a missing pointer, a misleading instruction, a skill step
 > that didn't fit, a check that didn't exist, a tool that dumped too much. Before proposing a fix, open the file you
 > would change and check the fix isn't already there. Don't edit anything. Return at most 6 findings, each:
