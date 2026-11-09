@@ -269,6 +269,13 @@ When you finish, or get stuck and need a decision, report back with:
   else
     full=$(jq -cn --argjson e "$envs" --argjson a "$argv" '$e + $a')
   fi
+  # A recipe can ask to keep the machine awake while the agent runs (an unattended pipeline
+  # must not freeze on idle suspend). The inhibitor ends when the agent exits.
+  local inhibit; inhibit=$(rget inhibit)
+  if [ -n "$inhibit" ] && command -v systemd-inhibit >/dev/null; then
+    full=$(jq -cn --arg w "$inhibit" --argjson f "$full" \
+      '["systemd-inhibit", "--what=idle:sleep", "--who=herd", "--why=\($w)", "--mode=block"] + $f')
+  fi
 
   # Labels every backend records.
   local labels
