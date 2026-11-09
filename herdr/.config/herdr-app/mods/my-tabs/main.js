@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, exec, home } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -12,9 +12,18 @@ function find(node, id) {
 }
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    // Todos needs the personal assistant's `pa` and its token, which only my own PC has
+    // (never the work PC). Without them there's no Todos button, panel or C-f d.
+    // `test` only, so the token is never read into here.
+    cx.spawn(async () => {
+      const h = home();
+      const r = await exec("sh", ["-c", 'test -f "$1" && test -x "$2"', "sh",
+        h + "/.config/assistant/token.env", h + "/.claude/skills/assistant/pa"]).catch(() => ({ code: 1 }));
+      setShared("todos.available", r.code === 0);
+    });
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -77,7 +86,8 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "tickets", "todos"];
+    const todos = shared("todos.available") === true;
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "tickets", ...(todos ? ["todos"] : [])];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -97,7 +107,7 @@ export default class Tabs extends View {
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("tickets", "Tickets", "my-icons/my-tabs/tickets.svg"))
-      .child(panelButton("todos", "Todos", "my-icons/my-tabs/todos.svg"))
+      .when(todos, el => el.child(panelButton("todos", "Todos", "my-icons/my-tabs/todos.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("my-icons/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`my-icons/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("my-icons/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
