@@ -23,6 +23,7 @@ dotfiles/
                ~/.local/bin/herdr-icons   (my herdr setup: Ctrl+F prefix, session picker, tickets and todos sidebar views;
                herdr itself is installed separately. herdr won't load icons through a symlink, so run `herdr-icons`
                after stowing herdr/herd and whenever an icon changes: it copies them to ~/.config/herdr-app/my-icons/)
+  retro/      → ~/.claude/skills/retro   (/retro: a retrospective over recent Claude sessions; scripts/digest.py ranks them by friction)
   ghostty/    → ~/.config/ghostty/     (colors theme-driven; see Theming)
   git/        → ~/.gitconfig
   fish/       → ~/.config/fish/
@@ -61,7 +62,7 @@ Quick reference — `.stowrc` pins the target to `$HOME`, so `stow <pkg>` works 
 
 ```bash
 # universal (both machines)
-stow bin gh-dash ghostty git fish herd herdr lazygit nvim sesh starship tmux
+stow bin gh-dash ghostty git fish herd herdr lazygit nvim retro sesh starship tmux
 # Hyprland desktop only
 stow hypr waybar mako wofi streamdeck   # streamdeck also needs a one-time setup (see Stream Deck)
 ```
