@@ -6,6 +6,7 @@
 // Week (the week's to-dos, then each day), Someday (by tag).
 // Keys: j/k move, x/space tick, a add (the server reads a "17:30" / "fri" prefix),
 // tab or 1/2/3 switch view, h shows/hides done, o opens the linked vault note, r refreshes.
+// Without pa or its token (the work PC) it never runs pa; my-tabs hides it there too.
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
@@ -50,13 +51,21 @@ export default class Todos extends View {
       for (const [name] of VIEWS) { const c = localStorage.getItem("view:" + name); if (c) this.data[name] = JSON.parse(c); }
     } catch (_) {}
     cx.spawn(async (cx) => { for (;;) { const c = await nextCommand(); if (c === "focus") { this.handle.focus(); cx.notify(); } } });
-    this.refresh(cx);
-    cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
+    this.available = null; // unknown until the check below
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", ["-c", 'test -f "$1" && test -x "$2"', "sh",
+        home() + "/.config/assistant/token.env", this.pa]).catch(() => ({ code: 1 }));
+      this.available = r.code === 0;
+      if (this.available) this.refresh(cx);
+      cx.notify();
+    });
+    cx.timer.every(POLL_MS, (cx) => this.refresh(cx)); // refresh() skips itself until available
   }
 
   get name() { return VIEWS[this.view][0]; }
 
   refresh(cx, inRender = false) {
+    if (!this.available) return;
     if (this.loading) { this.again = true; return; }
     this.loading = true;
     const name = this.name;
@@ -269,7 +278,8 @@ export default class Todos extends View {
     };
 
     let body;
-    if (!d && this.error) body = div().p(14).text_color(t.muted).child(this.error);
+    if (this.available === false) body = div().p(14).text_color(t.dim).child("The assistant isn't set up on this machine");
+    else if (!d && this.error) body = div().p(14).text_color(t.muted).child(this.error);
     else if (!d) body = div().p(14).text_color(t.dim).child("Loading your list…");
     else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.name === "today" ? "Nothing left for today" : "Nothing here");
     else body = div().flex_1().min_h(0).relative().px(4).py(2)
