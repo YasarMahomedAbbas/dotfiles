@@ -124,6 +124,17 @@ export default class Todos extends View {
     this.select(rows[i]);
   }
 
+  // A click on a row (the list's on_item_click): selects an item; clicking the
+  // selected item ticks it. Headings and events do nothing.
+  clicked(key, cx) {
+    const r = this.rows().find((x) => x.key === key);
+    if (r?.kind !== "item") return;
+    if (this.sel === key) this.tick(r.it, cx);
+    else this.sel = key;
+    this.handle.focus();
+    cx.notify();
+  }
+
   // Select an item row and bring it on screen (the list also holds headings and events).
   select(r) {
     if (!r) return;
@@ -244,11 +255,11 @@ export default class Todos extends View {
       const sel = r.key === this.sel;
       return h_flex().id(r.key).h(ROW_H).pl(10).pr(10).gap(8).items_center().rounded(5).cursor_pointer()
         .bg(sel && focused ? t.selected : t.background).hover((s) => s.bg(sel && focused ? t.selected : t.hover))
-        .on_click((_e, cx) => { this.sel = r.key; this.handle.focus(); cx.notify(); })
-        .child(div().id("tick:" + it.id).size(14).flex_none().rounded(7).border_1()
+        // No on_click here: a virtual list's rows can't carry handlers (it throws and the
+        // row isn't drawn). Clicks go through the list's on_item_click (clicked()).
+        .child(div().size(14).flex_none().rounded(7).border_1()
           .border_color(done ? t.ansi2 : it.overdue ? t.ansi1 : t.muted).bg(done ? t.ansi2 : t.background)
           .text_size(9).text_color(t.background).flex().items_center().justify_center()
-          .when(it.tickable, (e) => e.cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); this.sel = r.key; this.tick(it, cx); }))
           .child(done ? "✓" : ""))
         .when(Boolean(it.time), (e) => e.child(div().flex_none().text_size(11.5).text_color(it.overdue ? t.ansi1 : t.ansi3).child(hhmm(it.time))))
         .child(div().flex_1().min_w(0).truncate().text_color(done ? t.dim : t.foreground).when(done, (x) => x.line_through()).child(it.title))
@@ -263,7 +274,8 @@ export default class Todos extends View {
     else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.name === "today" ? "Nothing left for today" : "Nothing here");
     else body = div().flex_1().min_h(0).relative().px(4).py(2)
       .child(v_virtual_list("todos-list", rows.length, rows.map((r) => (r.kind === "head" ? HEAD_H : ROW_H)), (i) => rows[i].key,
-        (range) => rows.slice(range.start, range.end).map(row)).track_scroll(this.scroll).size_full())
+        (range) => rows.slice(range.start, range.end).map(row))
+        .on_item_click((key, cx) => this.clicked(key, cx)).track_scroll(this.scroll).size_full())
       .child(Scrollbar.vertical("todos-list").viewport_from_layout().absolute().inset_0());
 
     return v_flex().id("todos").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))

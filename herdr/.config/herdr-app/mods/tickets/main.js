@@ -265,6 +265,18 @@ export default class Tickets extends View {
     this.select(rows, i);
   }
 
+  // A click on a row (the list's on_item_click): a group folds; a ticket is selected,
+  // and clicking the selected ticket (its Start ▸ / Go ▸ label included) starts it.
+  clicked(key, cx) {
+    const r = this.rows().find((x) => x.key === key);
+    if (!r) return;
+    if (r.kind !== "ticket") { this.sel = key; this.toggle(r); }
+    else if (this.sel === key) this.askStart(r.t, cx);
+    else this.sel = key;
+    this.handle.focus();
+    cx.notify();
+  }
+
   // Select row i and bring it on screen.
   select(rows, i) {
     if (!rows[i]) return;
@@ -342,8 +354,9 @@ export default class Tickets extends View {
       const sel = r.key === this.sel && focused;
       const pad = 6 + r.depth * 16;
       let el = h_flex().id(r.key).h(ROW_H).pl(pad).pr(10).gap(7).items_center().rounded(5).cursor_pointer()
-        .bg(r.key === this.sel ? t.selected : t.background).hover((s) => s.bg(r.key === this.sel ? t.selected : t.hover))
-        .on_click((_e, cx) => { this.sel = r.key; if (r.kind !== "ticket") this.toggle(r); this.handle.focus(); cx.notify(); });
+        .bg(r.key === this.sel ? t.selected : t.background).hover((s) => s.bg(r.key === this.sel ? t.selected : t.hover));
+      // No on_click here: a virtual list's rows can't carry handlers (it throws and the
+      // row isn't drawn). Clicks go through the list's on_item_click (clicked()).
       if (r.kind === "area" || r.kind === "status") {
         const open = !this.isFolded(r);
         el = el.child(div().w(10).flex_none().text_size(9).text_color(t.dim).child(open ? "▾" : "▸"));
@@ -366,9 +379,9 @@ export default class Tickets extends View {
       if (lv) { const [w, c] = LIVE[lv.st] ?? [lv.st, "dim"]; el = el.child(h_flex().flex_none().gap(5).items_center().text_size(11).text_color(t.dim).child(div().size(7).rounded(4).bg(t[c] ?? t.dim)).child(w)); }
       else if (this.starting.has(tk.number)) el = el.child(div().flex_none().text_size(11).text_color(t.dim).child("starting…"));
       if (r.key === this.sel && !this.starting.has(tk.number) && (!lv || lv.key)) {
-        el = el.child(h_flex().id("go:" + r.key).flex_none().h(18).px(7).items_center().rounded(4).border_1().border_color(t.accent)
-          .text_size(11).text_color(t.accent).cursor_pointer().hover((s) => s.bg(t.hover))
-          .on_click((_e, cx) => { cx.stop_propagation(); this.askStart(tk, cx); cx.notify(); })
+        // Clicking the selected row (this label included) starts: see clicked().
+        el = el.child(h_flex().flex_none().h(18).px(7).items_center().rounded(4).border_1().border_color(t.accent)
+          .text_size(11).text_color(t.accent)
           .child(lv ? "Go ▸" : "Start ▸"));
       }
       return el;
@@ -380,7 +393,8 @@ export default class Tickets extends View {
     else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.query ? "Nothing matches" : "No tickets in this preset");
     else body = div().flex_1().min_h(0).relative().px(4).py(2)
       .child(v_virtual_list("tickets-list", rows.length, ROW_H, (i) => rows[i].key,
-        (range) => rows.slice(range.start, range.end).map((r, k) => row(r, range.start + k))).track_scroll(this.scroll).size_full())
+        (range) => rows.slice(range.start, range.end).map((r, k) => row(r, range.start + k)))
+        .on_item_click((key, cx) => this.clicked(key, cx)).track_scroll(this.scroll).size_full())
       .child(Scrollbar.vertical("tickets-list").viewport_from_layout().absolute().inset_0());
 
     return v_flex().id("tickets").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
