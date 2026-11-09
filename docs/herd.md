@@ -124,6 +124,9 @@ steps before launch. No recipe = the task goes to the agent unchanged.
 - name `#2021 sign-in autofill` (ref + 2–3 words of the slug), description = the ticket's
   problem line, labels `herd.recipe=ticket herd.key=<ref> ticket.stage=…`
 - writes `ticket.md` into the worktree's private git dir, as `ticket-window` does today
+- keeps the machine awake: it returns `inhibit`, so herd runs the agent under
+  `systemd-inhibit --what=idle:sleep` until it exits (hypridle's 30-min suspend froze an
+  unattended run for 4 h on 2026-11-08). Any recipe can return `inhibit: "<why>"`.
 
 Later recipes, as needed: `review` (an hc template as a role), `swarm` (below).
 

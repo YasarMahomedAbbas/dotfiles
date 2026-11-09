@@ -9,7 +9,8 @@
 # Reads the project from projects.json, makes the worktree (detached at origin/<base>,
 # seeded, set up) unless it exists, writes ticket.md into the worktree's private git dir,
 # and prints the settings herd starts the agent with. Contract: print one JSON object
-# {project, at, name, desc, task, key, labels}; anything on stderr is shown to the person.
+# {project, at, name, desc, task, key, labels, inhibit}; anything on stderr is shown to the person.
+# inhibit: herd keeps the machine from idling/sleeping while the agent runs.
 
 set -euo pipefail
 CONF="${HERD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/herd}"
@@ -116,4 +117,5 @@ task=$(printf '%s' "$first" | fill)${extra:+ $extra}
 jq -cn --arg project "$project" --arg at "$at" --arg name "$name" --arg desc "$desc" --arg task "$task" \
   --arg key "$project:$lref" --arg title "$title" --arg url "$url" --arg ref "$ref" '
   {project: $project, at: $at, name: $name, desc: $desc, task: $task, key: $key,
+   inhibit: "\($key) pipeline",
    labels: ({"herd.title": $title, "ticket.ref": $ref, "ticket.url": $url} | with_entries(select(.value != "")))}'
