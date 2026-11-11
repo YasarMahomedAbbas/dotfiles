@@ -4,6 +4,7 @@ format = """
 [](color_orange)\
 $os\
 $username\
+${custom.hc}\
 [](bg:color_yellow fg:color_orange)\
 $directory\
 [](fg:color_yellow bg:color_aqua)\
@@ -74,6 +75,16 @@ Debian = "󰣚"
 Redhat = "󱄛"
 RedHatEnterprise = "󱄛"
 Pop = ""
+
+# Inside an hc (herdr-core) terminal on a box with no desktop, e.g. hostinger over
+# browser SSH: show its address, since hc attach draws no status bar. Local herdr
+# panes are hc terminals too, but they have a display, so they stay quiet.
+[custom.hc]
+when = 'test -n "$HC_TERMINAL_ID" && test -z "$WAYLAND_DISPLAY$DISPLAY"'
+command = 'echo "$HC_TERMINAL_ID"'
+shell = ["sh"]
+style = "bg:color_orange fg:color_purple bold"
+format = '[hc:$output ]($style)'
 
 [username]
 show_always = true
