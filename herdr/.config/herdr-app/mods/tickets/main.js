@@ -2,7 +2,11 @@
 // as area → status → tickets. Sub-issues stay in their own column tagged ↑ #parent;
 // a parent shows its done/total. A ticket with an `issue-<n>` tab shows that tab's
 // live state. Keys: j/k (or ↑/↓, ctrl-j/ctrl-k) move, Enter/space folds a group,
-// p cycles presets, / searches, r refreshes, o opens the ticket on GitHub.
+// p cycles presets, / searches (fuzzy title, or #number), f opens the filter panel
+// (status / label / assignee checkboxes like the TUI's filter builder: OR within a
+// group, AND across; F clears), r refreshes, o opens the ticket on GitHub.
+// Folds and the filter are saved per project in localStorage, so they survive
+// closing the pane and restarting herdr.
 // Start ▸ (Enter or s on a ticket, or the button on the selected row) asks, then runs
 // `herd --recipe ticket -- "#<n>"` from the board's folder, detached: the recipe can
 // outlast a mod's 30 s exec limit, so its output goes to a log that's watched for the
@@ -28,6 +32,12 @@ function statusColor(t, status) {
   return t.ansi4;
 }
 const foldedByDefault = (status) => /future|done/i.test(status || "");
+const DIMS = ["status", "label", "assignee"];
+const DIM_LABEL = { status: "Status", label: "Label", assignee: "Assignee" };
+const emptyFilter = () => ({ status: new Set(), label: new Set(), assignee: new Set() });
+const lc = (s) => (s ?? "").toLowerCase();
+// The TUI's `/` is a fuzzy (skim) match: the query's letters in order, gaps allowed.
+const fuzzy = (q, s) => { let i = 0; for (const c of s) if (c === q[i]) i++; return i === q.length; };
 
 export default class Tickets extends View {
   init(_props, cx) {
@@ -41,8 +51,11 @@ export default class Tickets extends View {
     this.error = null;
     this.loading = false;
     this.preset = 0;
-    this.folded = new Set();
-    this.foldedSeeded = false;
+    this.folded = new Set();  // saved per project (see loadView/saveView)
+    this.filter = emptyFilter(); // f: status / label / assignee checkboxes, saved per project
+    this.filtering = false;   // the filter panel is showing instead of the board
+    this.fsel = null;         // filter panel row key
+    this.fscroll = VirtualListScrollHandle.new();
     this.sel = null;          // row key
     this.query = "";
     this.searching = false;
@@ -86,14 +99,112 @@ export default class Tickets extends View {
   }
 
   adopt(d) {
-    if (this.data?.project !== d.project) { this.foldedSeeded = false; this.folded = new Set(); this.sel = null; this.preset = 0;
-      try { const pr = Number(localStorage.getItem("preset:" + d.project)); if (Number.isInteger(pr)) this.preset = pr; } catch (_) {} }
-    this.data = d;
-    if (!this.foldedSeeded) {
-      for (const t of d.tickets) if (foldedByDefault(t.status)) this.folded.add("s:" + (t.status ?? ""));
-      this.foldedSeeded = true;
+    if (this.data?.project !== d.project) {
+      this.sel = null; this.fsel = null; this.preset = 0;
+      try { const pr = Number(localStorage.getItem("preset:" + d.project)); if (Number.isInteger(pr)) this.preset = pr; } catch (_) {}
+      this.loadView(d.project);
     }
+    this.data = d;
+    // Done / Future start folded. Re-adding is harmless: opening one of those
+    // groups is stored as an "open:" override, not by removing this key.
+    for (const t of d.tickets) if (foldedByDefault(t.status)) this.folded.add("s:" + (t.status ?? ""));
     if (this.preset >= (d.presets?.length ?? 0)) this.preset = 0;
+  }
+
+  // Folds and the filter survive closing the pane: localStorage, per project.
+  loadView(project) {
+    this.folded = new Set();
+    this.filter = emptyFilter();
+    try {
+      const v = JSON.parse(localStorage.getItem("view:" + project) || "null");
+      if (Array.isArray(v?.folded)) this.folded = new Set(v.folded);
+      for (const dim of DIMS) if (Array.isArray(v?.filter?.[dim])) this.filter[dim] = new Set(v.filter[dim]);
+    } catch (_) {}
+  }
+
+  saveView() {
+    if (!this.data?.project) return;
+    const filter = Object.fromEntries(DIMS.map((dim) => [dim, [...this.filter[dim]]]));
+    try { localStorage.setItem("view:" + this.data.project, JSON.stringify({ folded: [...this.folded], filter })); } catch (_) {}
+  }
+
+  filterCount() { return DIMS.reduce((n, dim) => n + this.filter[dim].size, 0); }
+
+  // Like the TUI's filter builder: OR within a group, AND across groups.
+  keeps(t) {
+    const f = this.filter;
+    return (!f.status.size || f.status.has(lc(t.status))) &&
+      (!f.label.size || (t.labels ?? []).some((l) => f.label.has(lc(l)))) &&
+      (!f.assignee.size || (t.assignees ?? []).some((a) => f.assignee.has(lc(a))));
+  }
+
+  // The preset's tickets that pass the filter (search not applied).
+  visibleTickets() {
+    const d = this.data;
+    if (!d) return [];
+    const preset = d.presets[this.preset];
+    const shown = preset ? new Set(preset.tickets) : null;
+    return d.tickets.filter((t) => (!shown || shown.has(t.number)) && this.keeps(t));
+  }
+
+  // Filter panel rows: a heading per group, then a checkbox per value on the board
+  // (within the preset), with how many tickets carry it. Checked values the board
+  // no longer has stay listed so they can be unticked.
+  filterRows() {
+    const d = this.data;
+    if (!d) return [];
+    const preset = d.presets[this.preset];
+    const shown = preset ? new Set(preset.tickets) : null;
+    const pool = d.tickets.filter((t) => !shown || shown.has(t.number));
+    const values = {
+      status: (t) => (t.status ? [t.status] : []),
+      label: (t) => t.labels ?? [],
+      assignee: (t) => t.assignees ?? [],
+    };
+    const rows = [];
+    if (this.filterCount()) rows.push({ kind: "fclear", key: "fclear" });
+    for (const dim of DIMS) {
+      const seen = new Map(); // lowercased → { value, count }
+      for (const t of pool) for (const v of values[dim](t)) {
+        const k = lc(v);
+        const e = seen.get(k) ?? { value: v, count: 0 };
+        e.count++;
+        seen.set(k, e);
+      }
+      for (const k of this.filter[dim]) if (!seen.has(k)) seen.set(k, { value: k, count: 0 });
+      let opts = [...seen.entries()];
+      if (dim === "status") {
+        const rank = (k) => { const i = d.status_order.findIndex((s) => lc(s) === k); return i < 0 ? 1e9 : i; };
+        opts.sort((a, b) => rank(a[0]) - rank(b[0]));
+      } else opts.sort((a, b) => b[1].count - a[1].count || a[1].value.localeCompare(b[1].value));
+      if (!opts.length) continue;
+      rows.push({ kind: "fhead", key: "fh:" + dim, label: DIM_LABEL[dim], n: this.filter[dim].size });
+      for (const [k, e] of opts) rows.push({ kind: "fopt", key: `fo:${dim}:${k}`, dim, k, value: e.value, count: e.count, on: this.filter[dim].has(k) });
+    }
+    return rows;
+  }
+
+  toggleFilter(r) {
+    if (r.kind === "fclear") { this.filter = emptyFilter(); this.fsel = null; }
+    else if (r.kind === "fhead") { if (this.filter[r.key.slice(3)].size) this.filter[r.key.slice(3)] = new Set(); else return; }
+    else if (r.kind === "fopt") { const s = this.filter[r.dim]; s.has(r.k) ? s.delete(r.k) : s.add(r.k); }
+    else return;
+    this.saveView();
+  }
+
+  moveFilter(delta) {
+    const rows = this.filterRows();
+    if (!rows.length) return;
+    let i = rows.findIndex((r) => r.key === this.fsel);
+    i = i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + delta));
+    this.fsel = rows[i].key;
+    this.fscroll.scroll_to_item(i);
+  }
+
+  openFilter(on) {
+    this.filtering = on;
+    this.searching = false;
+    this.handle.focus();
   }
 
   // `inRender`: called while drawing, where cx.notify() isn't allowed (the fetch
@@ -197,12 +308,12 @@ export default class Tickets extends View {
   rows() {
     const d = this.data;
     if (!d) return [];
-    const preset = d.presets[this.preset];
-    const shown = preset ? new Set(preset.tickets) : null;
-    const q = this.query.trim().toLowerCase().replace(/^#/, "");
+    const q = this.query.trim().toLowerCase();
+    const digits = /^#?\d+$/.test(q) ? q.replace(/^#/, "") : null;
+    const fq = q.replace(/\s+/g, "");
     const byN = new Map(d.tickets.map((t) => [t.number, t]));
-    const tickets = d.tickets.filter((t) => (!shown || shown.has(t.number)) &&
-      (!q || t.title.toLowerCase().includes(q) || String(t.number).startsWith(q)));
+    const tickets = this.visibleTickets().filter((t) => !q ||
+      (digits ? String(t.number).startsWith(digits) : fuzzy(fq, t.title.toLowerCase())));
 
     const order = [...d.status_order];
     for (const t of tickets) if (!order.some((s) => s.toLowerCase() === (t.status ?? "").toLowerCase())) order.push(t.status ?? "");
@@ -245,6 +356,11 @@ export default class Tickets extends View {
   }
 
   toggle(r) {
+    this.toggleFold(r);
+    this.saveView();
+  }
+
+  toggleFold(r) {
     if (r.kind === "area") { this.folded.has(r.key) ? this.folded.delete(r.key) : this.folded.add(r.key); return; }
     if (r.kind !== "status") return;
     if (r.folded) {
@@ -268,6 +384,13 @@ export default class Tickets extends View {
   // A click on a row (the list's on_item_click): a group folds; a ticket is selected,
   // and clicking the selected ticket (its Start ▸ / Go ▸ label included) starts it.
   clicked(key, cx) {
+    if (this.filtering) {
+      const r = this.filterRows().find((x) => x.key === key);
+      if (r) { this.fsel = key; this.toggleFilter(r); }
+      this.handle.focus();
+      cx.notify();
+      return;
+    }
     const r = this.rows().find((x) => x.key === key);
     if (!r) return;
     if (r.kind !== "ticket") { this.sel = key; this.toggle(r); }
@@ -303,6 +426,23 @@ export default class Tickets extends View {
       cx.notify();
       return;
     }
+    if (this.filtering) {
+      const fr = this.filterRows();
+      const fcur = fr.find((r) => r.key === this.fsel);
+      switch (e.keystroke) {
+        case "j": case "down": case "ctrl-j": this.moveFilter(1); break;
+        case "k": case "up": case "ctrl-k": this.moveFilter(-1); break;
+        case "g": if (fr[0]) { this.fsel = fr[0].key; this.fscroll.scroll_to_item(0); } break;
+        case "shift-g": if (fr.length) { this.fsel = fr[fr.length - 1].key; this.fscroll.scroll_to_item(fr.length - 1); } break;
+        case "space": case "enter": case "x": if (fcur) this.toggleFilter(fcur); break;
+        case "c": case "shift-f": this.filter = emptyFilter(); this.saveView(); break;
+        case "escape": case "f": case "q": this.openFilter(false); break;
+        default: return;
+      }
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     const rows = this.rows();
     const cur = rows.find((r) => r.key === this.sel);
     switch (e.keystroke) {
@@ -318,6 +458,8 @@ export default class Tickets extends View {
       case "r": this.refresh(cx, true); break;
       case "o": if (cur?.kind === "ticket") this.openOnGitHub(cur.t); break;
       case "/": this.searching = true; this.input.focus(); break;
+      case "f": this.openFilter(true); break;
+      case "shift-f": if (!this.filterCount()) return; this.filter = emptyFilter(); this.saveView(); break;
       default: return;
     }
     cx.stop_propagation();
@@ -336,9 +478,18 @@ export default class Tickets extends View {
 
     const header = h_flex().flex_none().h(42).px(14).gap(8).items_center().border_b(1).border_color(t.border)
       .child(div().font_semibold().text_color(t.foreground).truncate().child(d ? d.project : "Tickets"))
-      .when(Boolean(d), (e) => e.child(div().text_size(11.5).text_color(t.dim).child(this.countLabel(d.tickets.filter((x) => d.presets[this.preset]?.tickets.includes(x.number) ?? true)))))
+      .when(Boolean(d), (e) => e.child(div().text_size(11.5).text_color(t.dim).truncate().child(this.countLabel(this.visibleTickets()))))
       .child(div().flex_1())
       .when(this.loading, (e) => e.child(div().text_size(11).text_color(t.dim).child("refreshing…")))
+      .when(Boolean(d), (e) => {
+        const n = this.filterCount();
+        const on = n > 0 || this.filtering;
+        return e.child(h_flex().id("filter").flex_none().h(22).px(8).gap(4).items_center().rounded(5).border_1()
+          .border_color(on ? t.accent : t.border).text_size(11.5).text_color(on ? t.accent : t.muted)
+          .cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { this.openFilter(!this.filtering); cx.notify(); })
+          .child(n ? `filter · ${n}` : "filter"));
+      })
       .when(Boolean(d?.presets.length), (e) => e.child(
         h_flex().id("preset").h(22).px(8).gap(4).items_center().rounded(5).border_1().border_color(t.border).text_size(11.5).text_color(t.muted)
           .cursor_pointer().hover((s) => s.bg(t.hover))
@@ -387,10 +538,36 @@ export default class Tickets extends View {
       return el;
     };
 
+    // Filter panel row. Same rule as the board: no on_click on virtual-list rows.
+    const frow = (r) => {
+      const sel = r.key === this.fsel;
+      const el = h_flex().id(r.key).h(ROW_H).px(10).gap(7).items_center().rounded(5).cursor_pointer()
+        .bg(sel ? t.selected : t.background).hover((s) => s.bg(sel ? t.selected : t.hover));
+      if (r.kind === "fclear") return el.text_color(t.accent).text_size(11.5).child("✕  Clear all filters");
+      if (r.kind === "fhead") return el.child(div().font_semibold().text_color(t.foreground).child(r.label))
+        .when(r.n > 0, (x) => x.child(div().text_size(11).text_color(t.dim).child(`${r.n} on · ⏎ clears`)));
+      return el.pl(22)
+        .child(h_flex().size(13).flex_none().rounded(3).border_1().border_color(r.on ? t.accent : t.input ?? t.border)
+          .bg(r.on ? t.accent : t.background).text_size(10).text_color(t.background).items_center().justify_center().child(r.on ? "✓" : ""))
+        .when(r.dim === "status", (x) => x.child(div().size(8).flex_none().rounded(4).bg(statusColor(t, r.value))))
+        .child(div().flex_1().min_w(0).truncate().text_color(r.count ? t.foreground : t.dim).child(r.value))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child(String(r.count)));
+    };
+
     let body;
     if (!d && this.error) body = div().p(14).text_color(t.muted).child(this.error);
     else if (!d) body = div().p(14).text_color(t.dim).child("Loading the board…");
-    else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.query ? "Nothing matches" : "No tickets in this preset");
+    else if (this.filtering) {
+      const fr = this.filterRows();
+      if (this.fsel && !fr.some((r) => r.key === this.fsel)) this.fsel = fr[0]?.key ?? null;
+      if (!this.fsel) this.fsel = fr[0]?.key ?? null;
+      body = div().flex_1().min_h(0).relative().px(4).py(2)
+        .child(v_virtual_list("tickets-filter", fr.length, ROW_H, (i) => fr[i].key,
+          (range) => fr.slice(range.start, range.end).map((r) => frow(r)))
+          .on_item_click((key, cx) => this.clicked(key, cx)).track_scroll(this.fscroll).size_full())
+        .child(Scrollbar.vertical("tickets-filter").viewport_from_layout().absolute().inset_0());
+    }
+    else if (!rows.length) body = div().p(14).text_color(t.dim).child(this.query ? "Nothing matches" : this.filterCount() ? "No tickets match the filter (f to change, F clears)" : "No tickets in this preset");
     else body = div().flex_1().min_h(0).relative().px(4).py(2)
       .child(v_virtual_list("tickets-list", rows.length, ROW_H, (i) => rows[i].key,
         (range) => rows.slice(range.start, range.end).map((r, k) => row(r, range.start + k)))
@@ -417,6 +594,7 @@ export default class Tickets extends View {
             .child(btn("confirm-yes", "Start pipeline  ⏎", true, (_e, cx) => { this.start(tk, cx); cx.notify(); }))));
       })
       .child(h_flex().flex_none().h(22).px(12).items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(t.dim)
-        .child("j/k move · ⏎ start/fold · p preset · / search · r refresh · o GitHub"));
+        .child(this.filtering ? "j/k move · space toggle · c clear · esc/f done"
+          : "j/k move · ⏎ start/fold · p preset · f filter · / search · r refresh · o GitHub"));
   }
 }
