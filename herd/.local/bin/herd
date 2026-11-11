@@ -172,6 +172,27 @@ herdr_space_for() {   # a project's space: by name, else by folder
     [.spaces[] | select(.machine == null) | select((.name|ascii_downcase) == ($n|ascii_downcase) or .folder == $f)][0].id // empty'
 }
 
+# Remember each project's herdr space while the window is up, so a headless launch (the
+# window closed) labels the project's real space instead of an id herdr would make anew.
+remember_spaces() {
+  [ -f "$CONF/projects.json" ] || return 0
+  local ls; ls=$(herdr_ls) || return 0
+  [ -n "$ls" ] || return 0
+  mkdir -p "$CACHE"
+  local old="{}"; [ -f "$CACHE/spaces.json" ] && old=$(jq -c 'if type == "object" then . else {} end' "$CACHE/spaces.json" 2>/dev/null || echo '{}')
+  local roots="{}" p
+  for p in $(jq -r 'keys[]' "$CONF/projects.json"); do
+    roots=$(jq -c --arg p "$p" --arg r "$(expand "$(jq -r --arg p "$p" '.[$p].root // ""' "$CONF/projects.json")")" '. + {($p): $r}' <<<"$roots")
+  done
+  jq -c --argjson old "$old" --argjson roots "$roots" '
+    [.spaces[] | select(.machine == null)] as $sp |
+    $old + ($roots | with_entries(.key as $p | .value as $r |
+      .value = ([$sp[] | select((.name|ascii_downcase) == ($p|ascii_downcase))][0].id //
+                [$sp[] | select($r != "" and (.folder == $r or (.folder | startswith($r + "/"))))][0].id // null))
+      | with_entries(select(.value != null)))' <<<"$ls" > "$CACHE/spaces.json.tmp" &&
+    mv "$CACHE/spaces.json.tmp" "$CACHE/spaces.json" || rm -f "$CACHE/spaces.json.tmp"
+}
+
 # ---------------------------------------------------------------- start
 
 start() {
@@ -379,6 +400,7 @@ launch_herdr() {
   if [ "$focus" = 1 ]; then herdr-app do pane.focus "$(jq -cn --arg t "$t" '{terminal: $t}')" >/dev/null 2>&1 || true
   elif [ -n "$prev" ]; then herdr-app do pane.focus "$(jq -cn --arg p "$prev" '{pane: $p}')" >/dev/null 2>&1 || true
   fi
+  remember_spaces || true
   printf '%s\n' "$t"
 }
 
@@ -454,6 +476,7 @@ cmd_ls() {
   done
   local all; all=$(list_herds | jq -c --arg g "$group" --arg p "$project" \
     'select(($g == "" or .group == $g) and ($p == "" or (.labels["herd.project"] // "") == $p or (.key | startswith($p + ":"))))')
+  window_up && { remember_spaces || true; }
   if [ "$json" = 1 ]; then jq -s . <<<"$all"; return; fi
   [ -n "$all" ] || return 0
   printf '%s\n' "$all" | jq -r '[.id, .name, (.stage + (if .state != "" then " (" + .state + ")" else "" end)), .desc] | @tsv' |

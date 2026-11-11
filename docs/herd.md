@@ -210,6 +210,11 @@ Out of scope here: the ticket board (being rebuilt separately), personal-assista
   `--arg` (the runner's flags, in order, before the task; also for `task=send` runners),
   `--key` and `--inhibit` give what a recipe's `key` and `inhibit` would. A recipe's own
   values win over the flags.
+- A headless launch (herdr's window closed) labels the terminal `herdr.space=<id>` with the
+  project's space from `~/.cache/herd/spaces.json`. herd writes that file from `herdr-app ls`
+  whenever the window is up (every herdr launch and every `herd ls`), matching each project's
+  space by name, else by folder; a project never seen falls back to `herd-<project>`, which
+  herdr makes as a new space.
 
 ## Still open
 
