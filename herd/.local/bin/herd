@@ -37,6 +37,9 @@ Options for starting a herd:
   --tab <id> / --pane <id>          put it in that tab or beside that pane
   --group <id>                      label shared by related herds
   --label k=v                       an extra label (repeatable)
+  --arg <a>                         an extra argument for the runner, before the task (repeatable)
+  --key <k>                         dedupe key (a live herd with it is reused), unless a recipe sets one
+  --inhibit "<why>"                 keep the machine awake while it runs, unless a recipe sets it
   --recipe <name>                   a file in ~/.config/herd/recipes/
   --report                          it reports back to whoever started it
   --backend herdr|hc|tmux|here      override detection
@@ -174,6 +177,7 @@ herdr_space_for() {   # a project's space: by name, else by folder
 start() {
   local opt_place="" opt_at="" opt_project="" opt_runner="" opt_name="" opt_desc="" opt_tab="" opt_pane=""
   local opt_group="" opt_recipe="" opt_report=0 opt_focus="" opt_labels="{}"
+  local opt_args="[]" opt_key="" opt_inhibit=""
   opt_backend=""
   while [ $# -gt 0 ]; do
     case $1 in
@@ -188,6 +192,9 @@ start() {
       --group) opt_group=$2; shift 2 ;;
       --label) [[ $2 == *=* ]] || die "--label wants k=v"
                opt_labels=$(jq -c --arg k "${2%%=*}" --arg v "${2#*=}" '. + {($k): $v}' <<<"$opt_labels"); shift 2 ;;
+      --arg) opt_args=$(jq -c --arg a "$2" '. + [$a]' <<<"$opt_args"); shift 2 ;;
+      --key) opt_key=$2; shift 2 ;;
+      --inhibit) opt_inhibit=$2; shift 2 ;;
       --recipe) opt_recipe=$2; shift 2 ;;
       --report) opt_report=1; shift ;;
       --no-report) opt_report=0; shift ;;
@@ -214,12 +221,16 @@ start() {
   fi
   rget() { jq -r --arg k "$1" '.[$k] // empty' <<<"$r_json"; }
 
-  local key; key=$(rget key)
+  local key; key=$(rget key); key="${key:-$opt_key}"
   if [ -n "$key" ]; then
     local found; found=$(find_herd "$key" || true)
     if [ -n "$found" ]; then
-      warn "already running: $(jq -r '.name' <<<"$found") — going there"
-      go "$(jq -r '.id' <<<"$found")" >/dev/null || true
+      if [ "$opt_focus" = 0 ]; then   # a program that asked not to be shown anything
+        warn "already running: $(jq -r '.name' <<<"$found")"
+      else
+        warn "already running: $(jq -r '.name' <<<"$found") — going there"
+        go "$(jq -r '.id' <<<"$found")" >/dev/null || true
+      fi
       jq -c '. + {existing: true}' <<<"$found"
       return 0
     fi
@@ -265,13 +276,13 @@ When you finish, or get stuck and need a decision, report back with:
     '["env", "HERD_PARENT=\($p)", "HERD_BACKEND=\($b)", "HERD_KEY=\($k)", "HERD_NAME=\($n)"]')
   local full
   if [ "$mode" = arg ]; then
-    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --arg t "$task" '$e + $a + [$t]')
+    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --argjson x "$opt_args" --arg t "$task" '$e + $a + $x + [$t]')
   else
-    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" '$e + $a')
+    full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --argjson x "$opt_args" '$e + $a + $x')
   fi
   # A recipe can ask to keep the machine awake while the agent runs (an unattended pipeline
   # must not freeze on idle suspend). The inhibitor ends when the agent exits.
-  local inhibit; inhibit=$(rget inhibit)
+  local inhibit; inhibit=$(rget inhibit); inhibit="${inhibit:-$opt_inhibit}"
   if [ -n "$inhibit" ] && command -v systemd-inhibit >/dev/null; then
     full=$(jq -cn --arg w "$inhibit" --argjson f "$full" \
       '["systemd-inhibit", "--what=idle:sleep", "--who=herd", "--why=\($w)", "--mode=block"] + $f')
