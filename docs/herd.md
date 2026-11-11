@@ -55,6 +55,9 @@ Every herd is the same handful of settings, each with a default:
 | recipe | `--recipe` | a file in `recipes/` | none: the task goes to the agent verbatim |
 | backend | `--backend` | `herdr`, `hc`, `tmux`, `here` | detected, see below |
 | group | `--group <id>` | label shared by related herds | none (swarm uses it) |
+| runner arguments | `--arg <a>` (repeatable) | extra argv for the runner, after its own and before the task | none |
+| key | `--key <k>` | dedupe key and the `herd.key` label; a live herd with it is reused | the recipe's, else none |
+| keep awake | `--inhibit "<why>"` | runs the agent under `systemd-inhibit` | the recipe's, else none |
 
 ```
 herd [--place tab|right|down|space|bg] [--at <folder|project>] [--runner claude|codex|pi]
@@ -203,6 +206,10 @@ Out of scope here: the ticket board (being rebuilt separately), personal-assista
   environment and `herd report`, which works on herdr and tmux alike.
 - `hc ls` leaves labels out; `herd ls` reads each live terminal with `hc get`.
 - Extra labels: `--label k=v` (repeatable), visible in `herd ls --json` as `.labels`.
+- For programs that start herds without a recipe (personal-assistant's builder, #352):
+  `--arg` (the runner's flags, in order, before the task; also for `task=send` runners),
+  `--key` and `--inhibit` give what a recipe's `key` and `inhibit` would. A recipe's own
+  values win over the flags.
 
 ## Still open
 
