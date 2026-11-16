@@ -48,7 +48,7 @@ wt-dev compose -- ARGS  # docker compose against the live tree
 ```
 
 **`use` returns immediately.** Everything that can fail fast runs synchronously — resolving
-the worktree, the port preflight, the `require_files` check, the fingerprint decision — and
+the worktree, the port preflight, the `require_files` copy, the fingerprint decision — and
 then the slow part detaches. This matters because `dotnet watch` recompiles from scratch on
 every switch (the source tree under it changed) and compose's own `up -d` blocks until a
 `depends_on: service_healthy` dependency reports healthy. Together that is minutes; holding
@@ -60,6 +60,10 @@ Pass `--wait` to block instead. Other flags: `--build` forces a rebuild / setup 
 ### Guardrails, all automatic
 
 - **Port preflight.** Anything foreign holding a declared port aborts the start and is named.
+- **Untracked files.** Each `require_files` entry (e.g. `Frontend/.env`,
+  `.claude/settings.local.json`) missing from the tree is copied from the main checkout
+  (`cp -n`, never overwriting) with a `copied X from main checkout` line; it only warns when
+  the main checkout lacks it too.
 - **Fingerprint check.** Lockfiles, Dockerfiles and project files are hashed. Compose shares
   one named volume across trees, so it compares against the *previously live* tree and drops
   `volatile_volumes` before rebuilding. A process runner builds into each tree, so it tracks
