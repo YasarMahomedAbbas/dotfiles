@@ -41,7 +41,7 @@
 #   compose_file     = "docker-compose.yml"
 #   urls             = ["frontend=http://localhost:5173", "backend=http://localhost:5032"]
 #   env_file         = ".env"                    # falls back to the main checkout's copy
-#   require_files    = ["Frontend/.env"]         # warn (don't fail) when a tree lacks these
+#   require_files    = ["Frontend/.env"]         # copied from the main checkout when a tree lacks them
 #   fingerprint      = ["Frontend/package-lock.json", "Backend/Dockerfile"]
 #   volatile_volumes = [frontend_node_modules]   # dropped when the fingerprint changes
 #   db_var           = "TS_DB"                   # env var carrying the database name
@@ -651,8 +651,17 @@ cmd_use() {
   preflight_ports "$PROJ" || exit 1
 
   local f
+  # Hand-made worktrees boot without untracked files like Frontend/.env; seed them
+  # from the main checkout (never overwriting) instead of a warning that scrolls away.
   for f in $(cfg require_files); do
-    [ -e "$tree/$f" ] || warn "$f is missing in this tree — copy it from $(tildify "$MAIN")"
+    [ -e "$tree/$f" ] && continue
+    if [ "$tree" != "$MAIN" ] && [ -e "$MAIN/$f" ]; then
+      mkdir -p "$(dirname "$tree/$f")" && cp -n "$MAIN/$f" "$tree/$f" \
+        && good "copied $f from main checkout" \
+        || warn "$f is missing and copying it from $(tildify "$MAIN") failed"
+    else
+      warn "$f is missing in this tree and in the main checkout"
+    fi
   done
 
   local db_var; db_var="$(cfg db_var)"
