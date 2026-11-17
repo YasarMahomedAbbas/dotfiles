@@ -44,7 +44,7 @@ dotfiles/
   waybar/     → ~/.config/waybar/
   mako/       → ~/.config/mako/
   wofi/       → ~/.config/wofi/      (launcher + powermenu styles)
-  streamdeck/ → ~/.local/bin/ + ~/.config/systemd/user/  (Stream Deck session dashboard; see Stream Deck)
+  streamdeck/ → ~/.local/bin/ + ~/.config/systemd/user/  (Stream Deck herdr dashboard; see Stream Deck)
 ```
 
 **GNOME-only** (not a stow package — scripts/config applied directly):
@@ -191,20 +191,20 @@ bind <key> run-shell "tmux-cycle-layout"
 
 ### Stream Deck — physical session dashboard
 
-`streamdeck/` drives a 15-key Elgato Stream Deck (MK.2) as a live dashboard for the
-tmux + Claude workflow. The top row shows one key per tmux session (up to five),
-background-coloured by its most urgent Claude from `board list --json` — red = needs you,
-frost = working, yellow = slow, blue = background agents, green = finished and unseen, dim =
-idle. The attached session gets a cyan border. Press a session key to `board jump` to that
-Claude; a **DESIGN** key lights in the accent colour when a design canvas exists and opens it. The bottom row is actions: **PICK** (sesh popup),
-**THEME** (cycle `theme-switch`), **MIC** / **MUTE** (`wpctl`). A **MEDIA** key opens a second page of music controls (`playerctl` transport +
-`wpctl` volume), a **WORK** key opens a project launcher — one key per configured project
-(logo + name, bordered by its live session state) that create-or-switches via `sesh connect`,
-spawning a ghostty on workspace 1 if no terminal is open — and a **VPS** key opens an SSH
-launcher, one key per `~/.ssh/config` host, each opening a fresh ghostty running `ssh <host>`.
+`streamdeck/` drives a 15-key Elgato Stream Deck (MK.2) as a live dashboard for herdr and
+its agents. The top row shows one key per herdr space (up to five, in herdr's order; spaces
+that need you are never pushed off), coloured by its most urgent agent — red = needs you,
+green = finished and unseen, frost = working, yellow = slow, blue = background agents, dim =
+idle. The space herdr is showing gets a cyan border. Press a space key and herdr shows its most
+urgent agent (opening the window if it's closed); a **DESIGN** key lights in the accent colour
+when a design canvas exists and opens it. The bottom row is actions: **PICK** (herdr's sessions
+picker), **THEME** (`theme-switch` picker), **MIC** / **MUTE** (`wpctl`). **AGENTS** opens a card per running agent (stage strips, timers) to keep
+up while you work, **MEDIA** opens music
+controls (`playerctl` + `wpctl` volume), **WORK** a project launcher that shows or opens each
+project's space, and **VPS** one key per `hc` machine that shows or opens a space on it.
 Colours follow the active theme via `~/.config/theme/sesh-colors.sh`.
 
-A small Python daemon (`streamdeck-dashboard`, using `python-elgato-streamdeck`) polls tmux
+A small Python daemon (`streamdeck-dashboard`, using `python-elgato-streamdeck`) polls herdr
 ~1×/s and runs as a systemd user service. One-time setup after `stow streamdeck`:
 
 ```bash

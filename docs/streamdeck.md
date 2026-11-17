@@ -1,263 +1,211 @@
-# Stream Deck — physical tmux/Claude session dashboard
+# Stream Deck — physical herdr / agent dashboard
 
 Turns a 15-key Elgato Stream Deck (MK.2 / Original, 3×5, 72×72px keys) into a live
-dashboard for the tmux + Claude Code workflow: a glance at your desk tells you which
-agent needs you, and one press jumps your terminal there.
+dashboard for herdr and its coding agents: a glance at your desk tells you which project
+needs you, and one press puts herdr on it.
 
-Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script) and
-`~/.config/systemd/user/` (service unit).
+Package: `streamdeck/` → `~/.local/bin/` (daemon + setup script),
+`~/.config/systemd/user/` (service unit) and `~/.local/share/streamdeck-dashboard/logos/`.
 
 ---
 
-## What it shows
+## Main page
 
 ```
 ┌──────┬──────┬──────┬──────┬──────┐
-│ sess │ sess │ sess │ sess │ sess │  keys 0–4  — sessions, alphabetical (alerts always shown)
+│space │space │space │space │space │  keys 0–4  herdr spaces, in herdr's order
 ├──────┼──────┼──────┼──────┼──────┤
-│MEDIA │ WORK │      │ VPS  │DESIGN│  key 5 media, 6 work, 8 VPS, 9 newest design; 7 blank
+│MEDIA │ WORK │AGENTS│ VPS  │DESIGN│  5 media · 6 work · 7 agents · 8 VPS · 9 newest design
 ├──────┼──────┼──────┼──────┼──────┤
-│ PICK │THEME │      │ MIC  │ MUTE │  keys 10–14 — actions (12 blank)
+│ PICK │THEME │      │ MIC  │ MUTE │  10 sessions picker · 11 theme page · 13/14 mute toggles
 └──────┴──────┴──────┴──────┴──────┘
 ```
 
-**Sessions (keys 0–4)** — one key per running tmux session, sorted alphabetically so
-positions stay stable (muscle memory), up to five. The key shows the session name — or, if
-the session is a configured work project with a logo, that logo instead (keyed by session
-name, so e.g. a running `travelsmart` or `vault` shows its mark) — over a **label band**
-naming what Claude wants or is doing (the question's title, the stage, "2 agents"):
+Key 12 is free.
 
-```
-┌──────────┐
-│          │
-│issue-559 │   session name, or the project's logo
-│          │
-│──────────│
-│plan-brief│   the stage, or "allow Bash?" — truncated to one line
-└──────────┘
-```
+### Space keys (0–4)
 
-The colour says *what kind* of attention it wants; the band says *which state*, which is
-otherwise only discoverable by attaching:
+One key per herdr space, in the order herdr lists them, so positions follow your space
+order (alt-1…9). With more than five spaces, the ones that want you are guaranteed a key —
+needs-you first, then finished-unseen, then busy, then idle — and the five shown keep
+herdr's order.
 
-| Color | Meaning | Driven by |
+The colour is the space's **most urgent agent** (an agent is any terminal herdr knows runs
+Claude, Codex, pi, …):
+
+| Colour | Meaning | Source |
 |---|---|---|
-| 🔴 red | Needs you — a permission prompt, a question, a plan to approve | `state: needs_you` |
-| ⚪ frost (fg0) | Working | `state: working` |
-| 🟡 yellow | Working past the command's typical time | `current.typical_ms` exceeded |
-| 🔵 steel blue | Turn ended, agents / shells still running | `state: background` |
-| 🟢 green | Finished since you last looked | `unseen: true` |
-| ⚫ dim slate | Idle session | — |
-| cyan border | The session your terminal is currently attached to | most-recent tmux client |
+| 🔴 red, pulsing rim | Needs you — permission, question, plan | herdr `blocked` (or `error`) |
+| 🟢 green | Finished since you last looked | herdr `done` |
+| 🟡 yellow | Working past the command's typical time | herdr `working` + board `current.typical_ms` |
+| ⚪ frost | Working | herdr `working` |
+| 🔵 steel blue | Turn ended, sub-agents / shells still running | board `state: background` |
+| ⚫ dim | Idle, or no agents | — |
+| cyan border | The space herdr is showing | `herdr-app ls` `active` |
 
-The state behind these colours comes from `board list --json` — one call per poll — and is
-documented once in **[agent-board.md](agent-board.md)**. A session running several Claudes
-shows its most urgent one.
+An **active** space (red/yellow/frost/blue) is a card: the space name (`×2` when several
+of its agents are busy), what the urgent agent wants or is doing (the question's title,
+the command, `2 agents`), a ticking timer with the ticket number, then the six-stage
+pipeline strip and, while implementing, the task strip. A **quiet** space (green/dim)
+shows the project's logo — or its name — over a band (`✓ 5m ago`, `✓ 2 done`, or the
+ticket's stage).
 
-**When there are more sessions than slots**, the alerting ones are guaranteed a key rather
-than falling off the end of the alphabet — the row exists so a glance tells you which agent
-needs you, and that fails if the one that does is off-deck. With five or fewer, ordering is
-purely alphabetical as before.
+**Press** a space key: herdr shows that space's most urgent non-idle agent
+(`agent.focus`), or just the space (`space.select`, keeping its tab) when everything in it
+is idle, and the herdr window comes to the front. If the window is closed, the press opens
+it first — hc kept the terminals running — then does the same.
 
-Colors follow the active theme (`~/.config/theme/sesh-colors.sh` — the same
-`SESH_*_COLOR` values the sesh picker and `board` use), and update live when you run
-`theme-switch`.
+### Other main-page keys
 
-**Press a session key** → `board jump <key>`: switches your most-recently-active tmux client
-to that Claude's pane and focuses the terminal window (a session with no Claude just
-switches, as the work page does). If no tmux client is attached anywhere, a ghostty is
-launched attached to the session.
+| Key | Does |
+|---|---|
+| 5 MEDIA | media page |
+| 6 WORK | work page |
+| 7 AGENTS | agents page |
+| 8 VPS | VPS page |
+| 9 DESIGN | brush in the theme accent, with an accent border, when any Claude session published a design canvas; press opens the newest (`board design <key>`). Dim otherwise |
+| 10 PICK | herdr's sessions picker (`mod.open sessions`, the same as C-f s): open spaces, projects, recent folders |
+| 11 THEME | theme page |
+| 13 MIC | toggles mic mute (`wpctl … @DEFAULT_AUDIO_SOURCE@`); red slashed icon when muted |
+| 14 MUTE | toggles output mute (`wpctl … @DEFAULT_AUDIO_SINK@`); red icon when muted |
 
-**MEDIA (key 5)** — opens the media page (below). **WORK (key 6)** — opens the work
-(project launcher) page (below). **VPS (key 8)** — opens the VPS page (below).
-**DESIGN (key 9)** — a brush in the theme accent (with an accent border) when any session
-has published a design canvas; press to open the newest one (`board design <key>`). Dim
-otherwise. Key 7 is blank.
+---
 
-**Actions (keys 10–14):**
+## Where the state comes from
 
-| Key | Label | Does | Live state |
-|---|---|---|---|
-| 10 | PICK | Opens the sesh picker popup (`display-popup … sesh-picker`) on the attached client | — |
-| 11 | THEME | Opens the theme picker page (below) | — |
-| 13 | MIC | Toggles mic mute (`wpctl … @DEFAULT_AUDIO_SOURCE@`) | icon turns red when muted |
-| 14 | MUTE | Toggles output mute (`wpctl … @DEFAULT_AUDIO_SINK@`) | icon turns red when muted |
+One poll a second reads:
+
+- **`herdr-app ls`** — spaces, their tabs and terminals, each terminal's agent `status`
+  (`working` / `blocked` / `done` / `idle`) and which space is shown. Instant (it asks the
+  running window over its socket).
+- **`hc ls --json`** instead, **while the herdr window is closed**: each live terminal's
+  status and `where` (`space / tab`), so the deck keeps working headless. Spaces then come
+  in hc's order, nothing gets the cyan border, and "done" can't tell seen from unseen.
+- **`board list --json`** (the agent board, [agent-board.md](agent-board.md)) — the
+  detail herdr doesn't have: the question's title, the command in flight and its typical
+  duration, background agents, the ticket and its stage/task progress, design canvases.
+  A board entry is matched to its herdr terminal through the Claude process's
+  `HC_TERMINAL_ID` (`/proc/<pid>/environ`), so the agent-board mod needs no herdr support.
+  Agents the board doesn't know (Codex, pi) still colour their space from herdr alone.
+
+Colours follow the active theme (`~/.config/theme/sesh-colors.sh`, re-read every poll), so
+`theme-switch` shows on the deck at once.
+
+---
+
+## Agents page
+
+Press **AGENTS** (key 7, the centre) for a card per running agent — every key but BACK
+(10), so up to 14 — meant to stay open while you work. Cards keep herdr's order (space,
+then tab), so an agent keeps its key; with more than 14, the ones that need you or have
+finished are guaranteed a key.
+
+Each card is the same as an active space key, for one agent: the title is the ticket
+(`#2219`), else the tab's name (`hub retro fixes`), else the space's name, in the
+project's colour; then what it wants or is doing, the timer, and the stage and task
+strips. Quiet agents show a band on top, over their title: `idle 14m` (how long since it last did anything) or `✓ 5m ago` on green when it finished and you haven't looked. No logos on this page, so every key says what it is. The agent herdr is
+showing has the cyan border.
+
+**Press** a card: herdr shows that agent and comes to the front; the deck stays on this
+page. BACK returns to the main page.
 
 ---
 
 ## Media page
 
-Press **MEDIA** (key 5) to switch the deck to a music-control page. It drives whatever
-MPRIS player is active via `playerctl`, and output volume via `wpctl` — so it works with
-Spotify, browsers, `mpv`, etc. without any per-app config.
-
-A centred 3×2 cluster of controls, outer columns left blank:
-
 ```
 ┌──────┬──────┬──────┬──────┬──────┐
-│      │ PREV │ PLAY │ NEXT │      │  keys 1–3 — transport
+│      │ PREV │ PLAY │ NEXT │      │  keys 1–3  playerctl previous / play-pause / next
 ├──────┼──────┼──────┼──────┼──────┤
-│      │ MUTE │ VOL- │ VOL+ │      │  keys 6–8 — volume
+│      │ MUTE │ VOL- │ VOL+ │      │  keys 6–8  output mute, volume −5% / +5% (cap 150%)
 ├──────┼──────┼──────┼──────┼──────┤
-│ BACK │      │      │      │      │  key 10 — return to the main page
+│ BACK │      │      │      │      │
 └──────┴──────┴──────┴──────┴──────┘
 ```
 
-| Key | Label | Does | Live state |
-|---|---|---|---|
-| 1 | PREV | `playerctl previous` | — |
-| 2 | PLAY | `playerctl play-pause` | glyph/label become ⏸ PAUSE while playing |
-| 3 | NEXT | `playerctl next` | — |
-| 6 | MUTE | Toggles output mute (`wpctl … @DEFAULT_AUDIO_SINK@`) | icon turns red when muted |
-| 7 | VOL- | output volume −5% | — |
-| 8 | VOL+ | output volume +5% (capped at 150%) | — |
-| 10 | BACK | Returns to the main session page | — |
-
-The page polls `playerctl status` on the same ~1s cadence, so the play/pause glyph tracks
-the player even when you pause from elsewhere. Presses on the blank keys are ignored.
+Drives whatever MPRIS player is active (Spotify, browsers, mpv). PLAY turns into PAUSE
+while something plays, polled each second.
 
 ---
 
 ## Work page
 
-Press **WORK (key 6)** to switch the deck to a project launcher — one key per configured
-project (keys 0–9), **BACK** on key 10. Each key shows the project's logo (or a nerd-font
-glyph in the theme accent for projects without one) above its name.
-
-```
-┌──────┬──────┬──────┬──────┬──────┐
-│ proj │ proj │ proj │ proj │ proj │  keys 0–4 — projects (logo/glyph + name)
-├──────┼──────┼──────┼──────┼──────┤
-│ proj │      │      │      │      │  keys 5–9 — more projects (up to 10 total)
-├──────┼──────┼──────┼──────┼──────┤
-│ BACK │      │      │      │      │  key 10 — return to the main page
-└──────┴──────┴──────┴──────┴──────┘
-```
-
-Each key's **border** reflects that project's tmux session state, so you can see at a glance
-what's already running:
+One key per project in `WORK_PROJECTS` (keys 0–9), BACK on 10. Each shows the project's
+logo, or a glyph in the theme accent, over its label; the border is its space's state:
 
 | Border | Meaning |
 |---|---|
-| cyan | The session your terminal is currently attached to |
-| 🔴 red | Live — Claude needs you |
-| ⚪ / 🟡 / 🔵 | Live — Claude working / slow / background agents |
-| 🟢 green | Live — running but idle, or a finished pipeline |
-| none | Not running |
+| cyan | herdr is showing this space |
+| red / yellow / frost / blue | open, and an agent in it needs you / is slow / working / in the background |
+| green | open and quiet |
+| none | no space for it |
 
-**Press a project key** and the deck drops back to the main page after:
+**Press** a project: if a space with that name is open, herdr shows it; otherwise herdr
+opens a space named after the project, in its folder, with `claude` running — exactly what
+picking a project in herdr's sessions picker does. The deck then returns to the main page.
 
-- **If the session is already live** — `sesh connect -s` switches your most-recently-active
-  tmux client to it (works even though the daemon runs outside tmux), and Hyprland focuses a
-  ghostty window. Same behaviour as pressing its session key on the main page, but reachable
-  by project rather than by whatever's currently running.
-- **If it isn't** — the same `sesh connect -s` creates it first, honouring the project's
-  `startup_command` in `sesh.toml` (the standard `tmux-dev-layout`), then switches + focuses.
-- **If no terminal is open at all** (no tmux client anywhere) — Hyprland jumps to workspace 1
-  and launches `ghostty -e sesh connect <name>`, which attaches to the session (creating it
-  first if needed) in a fresh window.
+The folder comes from the same files the sessions picker reads: herd's
+`~/.config/herd/projects.json` (`root` + `workdir`), then the sessions mod's
+`projects.json` (`dotfiles`, `gegrond`, `vault`, …); a name in both uses the latter.
 
-The projects and their order are the `WORK_PROJECTS` list in the daemon; each entry pairs a
-`sesh.toml` session **name** (so the layout and live-state detection line up) with a label, an
-optional logo file, and a fallback glyph. Logos are small PNGs committed under
-`streamdeck/.local/share/streamdeck-dashboard/logos/` — pre-rasterized from each project's own
-logo (SVGs via `rsvg-convert`, and a warm rounded card baked behind dark marks so they read on
-a dark key). To add a project: add its `[[session]]` to `sesh.toml`, drop a `<name>.png` in the
-logos dir (or rely on the glyph), add a `WORK_PROJECTS` row, then `stow --restow streamdeck`
-and restart the service.
+To add a project: make sure it's in one of those files, drop a `<name>.png` in
+`streamdeck/.local/share/streamdeck-dashboard/logos/` (or give it a glyph), add a
+`WORK_PROJECTS` row, then `stow --restow streamdeck` and restart the service. A space whose
+name matches a `WORK_PROJECTS` logo shows that logo on the main page too. Logos are small
+PNGs pre-rasterised from each project's own logo (SVGs via `rsvg-convert`, with a warm
+rounded card behind dark marks so they read on a dark key).
 
 ---
 
 ## VPS page
 
-Press **VPS (key 8)** to switch the deck to an SSH launcher — one key per configured host,
-centred in the middle row (keys 6 & 8), **BACK** on key 10. Each key shows the host's logo
-(or a server glyph in the theme accent for hosts without one) above its label.
+One key per machine in `VPS_HOSTS` (keys 6 and 8), BACK on 10; bordered like the work
+page by the state of a space on that machine.
 
-```
-┌──────┬──────┬──────┬──────┬──────┐
-│      │      │      │      │      │
-├──────┼──────┼──────┼──────┼──────┤
-│      │ host │      │ host │      │  keys 6 & 8 — one per SSH host (server glyph + label)
-├──────┼──────┼──────┼──────┼──────┤
-│ BACK │      │      │      │      │  key 10 — return to the main page
-└──────┴──────┴──────┴──────┴──────┘
-```
-
-**Press a host key** and the deck drops back to the main page after launching a **fresh
-ghostty** running `ssh <alias>`. Unlike the work page, a VPS press *always* opens a new
-terminal window (one per press) — it never reuses or switches an existing client, so each
-SSH session gets its own window. The alias is resolved from `~/.ssh/config`, so all the
-connection details (HostName, User, Port, IdentityFile) live there rather than in the daemon.
-
-The hosts and their order are the `VPS_HOSTS` list in the daemon — each entry is
-`(ssh_alias, label, logo_file, glyph)`, where `ssh_alias` must be a `Host` entry in
-`~/.ssh/config` and `logo_file` is a PNG in `LOGO_DIR` (or `None` to fall back to the glyph).
-To add a VPS: add its `Host` block to `~/.ssh/config`, drop a `<name>.png` in the logos dir
-(or rely on the glyph), add a `VPS_HOSTS` row, then `stow --restow streamdeck` (only if you
-added a logo) and restart the service.
-
-The ghostty windows are launched in their own transient systemd scope (via
-`systemd-run --user --scope`, see [How it works](#how-it-works)), so they survive a restart
-of the dashboard service.
+**Press** a machine: herdr shows the first open space on it, or opens a new space there
+(`space.new --machine <name>`). The names are hc's (`hc machine ls`), which holds the ssh
+details; add a machine with `hc machine add`, then a `VPS_HOSTS` row.
 
 ---
 
-## Theme picker page
+## Theme page
 
-Press **THEME** (key 11) to switch the deck to a picker of every `theme-switch` palette —
-one key per theme (keys 0–9), **BACK** on key 10. Each key previews the theme with its own
-`bg0` as the background and a colour-picker (eyedropper) icon plus the theme name drawn in the
-theme's own `accent` colour. The **active** theme gets a border in that accent colour.
-
-```
-┌──────┬──────┬──────┬──────┬──────┐
-│ 🎨   │ 🎨   │ 🎨   │ …    │ …    │  keys 0–9 — one per palette (icon + name in its accent)
-├──────┼──────┼──────┼──────┼──────┤
-│ …    │      │      │      │      │
-├──────┼──────┼──────┼──────┼──────┤
-│ BACK │      │      │      │      │  key 10 — return to the main page
-└──────┴──────┴──────┴──────┴──────┘
-```
-
-Press a theme key to apply it (`theme-switch <name>`) — it takes effect live across the
-desktop, and the deck stays on the picker with the active border moving to your choice, so
-you can audition several before pressing **BACK**. The palettes are read from
-`<repo>/themes/palettes/*.env`, resolved from the `theme-switch` symlink (or `$DOTFILES`).
+One key per `theme-switch` palette (keys 0–9), BACK on 10, each drawn in its own colours
+(its `bg0`, an eyedropper and the name in its `accent`); the active one has an accent
+border. A press applies it live and stays on the page, so you can audition several. The
+palettes are `<repo>/themes/palettes/*.env`, found through the `theme-switch` symlink (or
+`$DOTFILES`).
 
 ---
 
 ## How it works
 
-A small Python daemon, `streamdeck-dashboard`, using the
-[`python-elgato-streamdeck`](https://github.com/abcminiuser/python-elgato-streamdeck)
-library and Pillow for key images. It:
+A small Python daemon using
+[`python-elgato-streamdeck`](https://github.com/abcminiuser/python-elgato-streamdeck) and
+Pillow:
 
-- polls tmux roughly once a second (`POLL = 1.0`) and re-renders **only** the keys whose
-  appearance changed, keeping USB traffic minimal;
-- reads Claude status from the agent board — one `board list --json` per poll for the whole
-  deck (see [agent-board.md](agent-board.md)); `board` itself caches its enrichment
-  (ticket-context 30 s, wt-dev 5 s), so the poll stays cheap;
-- handles key presses on a background thread, then refreshes immediately so toggles feel
-  instant;
-- launches every GUI child (ghostty terminals for session/work/VPS) in its **own transient
-  systemd scope** via `systemd-run --user --scope`, so those windows live outside the
-  service's cgroup and are **not** killed when the service restarts. The unit also sets
-  `KillMode=process` (only the daemon is signalled on stop), so any terminal — and the tmux
-  server/client inside it — that predates the scope change survives a restart too;
-- resets the deck (blanks all keys) on shutdown, so stopping the service clears it.
+- each poll, the page on screen returns its keys as `{key: (signature, render)}` and its
+  presses as `{key: action}`; a key is only redrawn when its signature changed (a ticking
+  timer redraws once a second, everything else almost never), and keys a page leaves out
+  are blanked, so switching pages leaves nothing stale;
+- presses run on the library's callback thread and refresh immediately; anything that
+  waits on herdr (opening the window) runs on its own thread so the deck never freezes;
+- the herdr window, when the deck opens it, starts in its **own transient systemd scope**
+  (`systemd-run --user --scope`), and the unit has `KillMode=process`, so restarting the
+  service never closes it;
+- a dead or wedged USB handle (unplug, suspend) is detected by failed writes and the deck
+  is reopened; stopping the service blanks the deck.
 
-It runs as a **systemd user service** (`streamdeck-dashboard.service`) ordered after
-`graphical-session.target`. The service's `PATH` includes `~/.local/bin` so it can reach
-`sesh-picker` and `theme-switch`.
+It runs as a **systemd user service** (`streamdeck-dashboard.service`) after
+`graphical-session.target`, with `~/.local/bin` on its `PATH` for `herdr-app`, `hc`,
+`board` and `theme-switch`.
 
 ### Why a venv
 
 The daemon runs from a machine-local virtualenv at
-`~/.local/share/streamdeck-dashboard/venv` (not committed). It's created with
-`--system-site-packages` so it reuses the system `python-pillow` (no Pillow build) and
-only pip-installs the small, pure-Python `streamdeck` library, which talks to the system
-`hidapi`. The systemd unit's `ExecStart` points at this venv's Python.
+`~/.local/share/streamdeck-dashboard/venv` (not committed), created with
+`--system-site-packages` so it reuses the system `python-pillow` and only pip-installs the
+pure-Python `streamdeck` library, which talks to the system `hidapi`.
 
 ---
 
@@ -293,48 +241,31 @@ systemctl --user enable --now streamdeck-dashboard.service
 
 ## Configuration
 
-Everything tunable is a config block at the top of
-`streamdeck/.local/bin/streamdeck-dashboard`; edit and restart the service.
+Everything tunable is the config block at the top of
+`streamdeck/.local/bin/streamdeck-dashboard`; edit, then restart the service.
 
-| What | Where | Notes |
-|---|---|---|
-| Poll interval | `POLL` | seconds between tmux polls |
-| Session key range | `SESSION_SLOTS` | defaults to keys 0–4 (5 slots, top row) |
-| Media button | `MEDIA_KEY` | main-page key that opens the media page (default 5) |
-| Work button | `WORK_KEY` | main-page key that opens the work page (default 6) |
-| VPS button | `VPS_KEY` | main-page key that opens the VPS page (default 8) |
-| Design button | `DESIGN_KEY` | main-page key that opens the newest design canvas (default 9) |
-| Theme button | `THEME_KEY` | main-page action key that opens the theme picker (default 11) |
-| Theme key range | `THEME_SLOTS` / `THEME_BACK_KEY` | picker-page slots (0–9) and BACK (10) |
-| Work key range | `WORK_SLOTS` / `WORK_BACK_KEY` | work-page slots (0–9) and BACK (10) |
-| VPS key range | `VPS_SLOTS` / `VPS_BACK_KEY` | VPS-page host slots (centred: keys 6 & 8) and BACK (10) |
-| Projects | `WORK_PROJECTS` | ordered `(session_name, label, logo_file, glyph)` rows for the work page |
-| VPS hosts | `VPS_HOSTS` | ordered `(ssh_alias, label, logo_file, glyph)` rows for the VPS page; alias must be a `~/.ssh/config` Host |
-| Logos | `LOGO_DIR` | where work-page logo PNGs live (`~/.local/share/streamdeck-dashboard/logos`) |
-| Picker command | `PICKER_POPUP` | the `display-popup` args for the PICK key |
-| Colors | `COLORS` | fallback palette; the status roles (`alert`, `busy`, `slow`, `background`, `done`, `design`) are overridden live from the theme |
-| Action keys | `ACTIONS` dict | main-page actions — `{key: (glyph, label, is_active_fn, handler_fn)}` |
-| Media keys | `MEDIA_ACTIONS` dict | media-page keys, same tuple shape; key 10 (`None` handler) is BACK |
-| Active-state glyphs | `ACTIVE_GLYPH` | glyph swap when a toggle is active (e.g. mic-muted) |
-| Brightness | `deck.set_brightness(70)` in `main()` | 0–100 |
+| What | Where |
+|---|---|
+| Poll interval, brightness | `POLL`, `BRIGHTNESS` |
+| Space keys | `SPACE_SLOTS` (keys 0–4) |
+| Main-page keys | `MEDIA_KEY`, `WORK_KEY`, `AGENTS_KEY`, `VPS_KEY`, `DESIGN_KEY`, `PICK_KEY`, `THEME_KEY`, `MIC_KEY`, `MUTE_KEY` |
+| Sub-page keys | `PAGE_SLOTS` (work + theme, 0–9), `VPS_SLOTS` (6, 8), `AGENT_SLOTS` (all but BACK), `BACK_KEY` (10) |
+| Projects | `WORK_PROJECTS` — `(space name, label, logo file, glyph)` |
+| Machines | `VPS_HOSTS` — `(hc machine, label, logo file, glyph)` |
+| Picker | `PICKER_MOD` — the herdr mod PICK opens |
+| herdr window class | `HERDR_CLASS` — what Hyprland focuses after a press |
+| Name colours | `NAME_COLORS` — a project's / machine's colour for its name (`accent` = the theme's) |
+| Fallback colours | `COLORS` (the status roles and accent are overridden from the theme) |
 
-To **add or re-map an action key**, edit the `ACTIONS` dict. For example, key 12 is free —
-add a tuple to make it run a script:
+What each page draws and does is its `page_*` method on `Dashboard`. To give the free key
+(12) an action, add a line to `page_main`:
 
 ```python
-12: ("", "TERM", None, lambda: sh("my-script")),
+put(12, render_action, G_SEARCH, "TERM", on=lambda: sh("my-script"))
 ```
 
-The `is_active_fn` (3rd item) returns a bool to tint the key's icon with the accent color
-(used by MIC/MUTE); pass `None` for a plain action. Note that `MEDIA_KEY`, `WORK_KEY` and
-`THEME_KEY` are page-openers intercepted in `_press_main` (their glyph entry only controls how
-the key looks), so re-mapping those means changing the intercept, not just the tuple.
-
-After any edit:
-
-```bash
-systemctl --user restart streamdeck-dashboard.service
-```
+`render_action(deck, glyph, label, color=None, border=None)`: a colour tints the glyph
+(MIC/MUTE use `COLORS["on"]` when muted).
 
 ---
 
@@ -357,14 +288,14 @@ shutdown, and logs a traceback (without dying) if a poll cycle errors.
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Keys stay blank, service keeps restarting | Deck not accessible — check the udev rule and **replug**; `journalctl --user -u streamdeck-dashboard` will show the error. |
+| Keys stay blank, service keeps restarting | Deck not accessible — check the udev rule and **replug**; `journalctl --user -u streamdeck-dashboard` shows the error. |
 | `No module named 'StreamDeck'` | venv missing or stale — re-run `streamdeck-dashboard-setup`. |
-| Names/positions mirrored | Key indexing assumes top-left origin; if a future deck differs, remap `SESSION_SLOTS`. |
-| PICK / MIC do nothing | The service needs the graphical env; it inherits `WAYLAND_DISPLAY` from the user session. Check `systemctl --user show-environment | grep WAYLAND`. |
-| Wrong session lit | Compare with `board list` — the key shows the first entry whose `tmux.session` matches. A stale state file shows as `stale` there and is ignored. |
-| Work page shows glyphs, no logos | Logos not stowed — `stow --restow streamdeck` so `~/.local/share/streamdeck-dashboard/logos/` is populated (new files aren't linked by a plain `stow`). A missing logo silently falls back to the glyph. |
-| WORK key does nothing / opens wrong dir | The project's `name` in `WORK_PROJECTS` must match its `sesh.toml` session name; `sesh connect` resolves the path/layout from there. Focus needs `hyprctl` + `ghostty` on the service PATH (both in `/usr/bin`). |
-| Colors don't match theme | `theme-switch` writes `~/.config/theme/sesh-colors.sh`; the daemon re-reads it each poll. |
+| Space keys all dim | Compare with `herdr-app ls` (window open) or `hc ls` (closed): the colour is herdr's `status` for the space's agent terminals. A program that doesn't report status to herdr shows nothing. |
+| A busy space has no detail / timer / stage strip | The board has no entry for that terminal: check `board list --json` and that the Claude process has `HC_TERMINAL_ID` (it does when started in an hc terminal). Codex / pi agents only ever get herdr's colour. |
+| Press does nothing | `journalctl --user -u streamdeck-dashboard` logs every failed `herdr-app do`. Focusing needs `hyprctl` and the `herdr-app` window class. |
+| WORK opens a space in the wrong folder | The project's name isn't in herd's `projects.json` or the sessions mod's `projects.json` (logged as `no folder for project …`). |
+| Work page shows glyphs, no logos | Logos not stowed — `stow --restow streamdeck`; a missing logo falls back to the glyph. |
+| Colours don't match theme | `theme-switch` writes `~/.config/theme/sesh-colors.sh`; the daemon re-reads it each poll. |
 
 ---
 
