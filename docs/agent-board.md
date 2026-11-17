@@ -153,7 +153,7 @@ the agent sidebar are gone).
 | `pane-focus-in` hook | `board seen #{pane_id}` | focusing a pane clears its `✓ unseen`; `board list` also treats a pane some client is looking at as seen |
 | sesh picker (`prefix+s`) | `sesh-list-bells` (one `board list --json` per render) | status column `● needs you · <title>` / `▶ <detail> <elapsed>[ slow]` / `◐ background · N agents` / `✓ unseen` / nothing when idle |
 | picker preview | `sesh-preview` | banner from the board, the question and its options, then the ticket card from `ticket-context` and the pane tail of the board's pane |
-| Stream Deck | `streamdeck-dashboard` (one `board list --json` per poll) | session keys coloured per §4, press → `board jump <key>`; key 9 DESIGN in accent when a design exists, press → `board design <key>` |
+| Stream Deck | `streamdeck-dashboard` (`herdr-app ls` + one `board list --json` per poll, joined by `HC_TERMINAL_ID`) | a key per herdr space coloured per §4 by its most urgent agent, card from the board entry; press → herdr `agent.focus`; key 9 DESIGN in accent when a design exists, press → `board design <key>` |
 
 Colours come from `~/.config/theme/sesh-colors.sh`, which gained `SESH_FG0_COLOR`,
 `SESH_BLUE_COLOR`, `SESH_BG_COLOR` and `SESH_PILL_BG` for the board; until the next

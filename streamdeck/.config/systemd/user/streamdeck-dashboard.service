@@ -1,22 +1,20 @@
 [Unit]
-Description=Stream Deck tmux/Claude dashboard
+Description=Stream Deck herdr/agent dashboard
 Documentation=https://github.com/yasarmahomedabbas/dotfiles
-# Ordering only — the daemon waits for the deck and tmux on its own, so a missing
-# graphical session or unplugged deck just means it idles rather than fails.
+# Ordering only — the daemon waits for the deck on its own, and reads hc while the
+# herdr window is closed, so an unplugged deck or closed window just means it idles.
 After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 Type=simple
-# ~/.local/bin holds sesh-picker / theme-switch / screen-record; the rest live in /usr/bin.
+# ~/.local/bin holds herdr-app / hc / board / theme-switch; the rest live in /usr/bin.
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=%h/.local/share/streamdeck-dashboard/venv/bin/python %h/.local/bin/streamdeck-dashboard
 Restart=on-failure
 RestartSec=3
-# Only signal the main daemon on stop/restart — never the whole cgroup. Terminals
-# the daemon launched (ghostty, and any tmux client inside them) must survive a
-# restart. Those are also placed in their own transient scopes via systemd-run
-# (see spawn()), so this is belt-and-suspenders for any that predate that change.
+# Only signal the daemon on stop/restart, never the whole cgroup: a herdr window it
+# opened must survive. spawn() also puts it in its own scope via systemd-run.
 KillMode=process
 
 [Install]

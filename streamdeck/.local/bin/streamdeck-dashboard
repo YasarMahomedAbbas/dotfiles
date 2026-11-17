@@ -1,31 +1,27 @@
 #!/usr/bin/env python3
 """
-streamdeck-dashboard — a physical dashboard for the tmux + Claude workflow on a
+streamdeck-dashboard — a physical dashboard for herdr and its coding agents on a
 15-key Stream Deck (MK.2 / Original, 3x5, 72x72px keys).
 
-Top row (keys 0-4): one key per tmux session, background coloured by its most urgent
-Claude from the agent board (`board list --json`, docs/agent-board.md §4) — red =
-needs you, frost = working, yellow = working past its typical time, steel blue =
-background agents, green = finished and unseen, dim slate = idle — over a band
-naming what it wants or does ("Results", "build", "2 agents"). The currently-attached
-session gets a cyan border. Press a session key to `board jump` to that Claude's pane
-(or switch to the session when no Claude runs there). Key 5 (MEDIA) opens the media
-page; key 6 (WORK) opens the work (project launcher) page; key 8 (VPS) opens the VPS
-page — one key per SSH host, each of which opens a fresh ghostty running `ssh <host>`.
-Key 9 (DESIGN) lights in the theme accent when any session has published a design
-canvas, and opens the newest one (`board design`).
+Main page
+  keys 0-4  herdr spaces, in herdr's order, coloured by their most urgent agent
+            (red needs you · green finished, unseen · frost working · yellow slow ·
+            blue background agents · dim idle). Press: herdr shows that agent (or
+            the space) and the window comes to the front, opening herdr if closed.
+  key 5     MEDIA page (playerctl + wpctl)
+  key 6     WORK page: one key per project, opens or shows its space
+  key 8     VPS page: one key per hc machine, opens or shows a space on it
+  key 9     DESIGN: lit when a session published a design canvas, opens the newest
+  key 10    PICK: herdr's sessions picker   key 11 THEME page
+  key 13    MIC mute                        key 14 output MUTE
 
-Bottom row: PICK (sesh popup, key 10) · THEME (picker page, key 11) · MIC (mic
-mute, key 13) · MUTE (output mute, key 14). MIC/MUTE reflect live
-state. MEDIA opens playerctl transport + volume controls; THEME opens a picker
-of the available theme-switch palettes (each key previews its own colours); WORK
-opens a launcher of the configured projects (each key shows its logo/glyph and a
-border for the session's live state) that create-or-switch via `sesh connect`.
+Agent state comes from herdr (`herdr-app ls`, or `hc ls` while the window is closed),
+enriched with the agent board (`board list --json`: ticket, stage, timer, designs).
+See docs/streamdeck.md.
 
-Runs as a systemd user service (streamdeck-dashboard.service). Polls ~1x/s
-and only redraws keys whose appearance actually changed, so USB traffic stays low.
-The interpreter is the venv at ~/.local/share/streamdeck-dashboard/venv (created
-by the install step); the systemd unit points ExecStart at it.
+Runs as streamdeck-dashboard.service from the venv at
+~/.local/share/streamdeck-dashboard/venv. Polls ~1x/s and only redraws keys whose
+appearance changed, so USB traffic stays low.
 """
 
 import json
@@ -37,83 +33,111 @@ import sys
 import threading
 import time
 import traceback
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
-
-
-def log(*a):
-    print("streamdeck-dashboard:", *a, file=sys.stderr, flush=True)
 
 from PIL import Image, ImageDraw, ImageFont
 from StreamDeck.DeviceManager import DeviceManager
 from StreamDeck.ImageHelpers import PILHelper
 
-# ── config ──────────────────────────────────────────────────────────────────
-POLL = 1.0                      # seconds between tmux polls
-SESSION_SLOTS = list(range(5))  # keys 0-4 -> sessions (top row only)
-MEDIA_KEY = 5                   # key 5 opens the media page (freed middle row)
-WORK_KEY = 6                    # key 6 opens the work (projects) page
-VPS_KEY = 8                     # key 8 opens the VPS (ssh launcher) page
-DESIGN_KEY = 9                  # key 9 opens the newest design canvas (board design)
-THEME_KEY = 11                  # THEME action key opens the theme picker page
-THEME_SLOTS = list(range(10))   # theme-picker page: keys 0-9 -> themes
-THEME_BACK_KEY = 10             # theme-picker page: BACK
-WORK_SLOTS = list(range(10))    # work page: keys 0-9 -> projects
-WORK_BACK_KEY = 10              # work page: BACK
-VPS_SLOTS = [6, 8]              # VPS page: host keys, centred in the middle row
-VPS_BACK_KEY = 10               # VPS page: BACK
-PICKER_POPUP = ["display-popup", "-E", "-w", "75%", "-h", "75%", "sesh-picker"]
 
-# Work page — one key per project (in this fixed order, for muscle memory). Each
-# entry is (session_name, label, logo_file | None, glyph). session_name MUST match
-# the sesh.toml session name so a live session is detected and `sesh connect`
-# resolves the right config. logo_file (in LOGO_DIR) renders as an image; when it
-# is None the glyph is drawn in the theme accent instead.
+def log(*a):
+    print("streamdeck-dashboard:", *a, file=sys.stderr, flush=True)
+
+
+# ── config ──────────────────────────────────────────────────────────────────
+POLL = 1.0                      # seconds between polls
+BRIGHTNESS = 70                 # 0-100
+SPACE_SLOTS = list(range(5))    # main page: keys 0-4 -> herdr spaces
+MEDIA_KEY, WORK_KEY, AGENTS_KEY, VPS_KEY, DESIGN_KEY = 5, 6, 7, 8, 9
+PICK_KEY, THEME_KEY, MIC_KEY, MUTE_KEY = 10, 11, 13, 14
+BACK_KEY = 10                   # every sub-page: back to the main page
+PAGE_SLOTS = list(range(10))    # work + theme pages: keys 0-9
+VPS_SLOTS = [6, 8]              # VPS page: centred in the middle row
+AGENT_SLOTS = [k for k in range(15) if k != BACK_KEY]   # agents page: 14 cards
+
+HERDR_CLASS = "herdr-app"       # Hyprland window class of the herdr window
+PICKER_MOD = "sessions"         # herdr mod opened by PICK (C-f s)
+
+# Projects for the WORK page, in this fixed order (muscle memory):
+# (space name, label, logo file | None, glyph). The name is the herdr space name, and
+# its folder comes from the same files herdr's sessions picker reads (herd's
+# projects.json, then the sessions mod's projects.json). A space with that name shows
+# the project's logo on the main page too.
 LOGO_DIR = Path.home() / ".local/share/streamdeck-dashboard/logos"
 WORK_PROJECTS = [
-    ("dotfiles",    "dotfiles",  None,            ""),  # gear
-    ("prepahead",   "prepahead", "prepahead.png", None),
-    ("equipx",      "equipx",    "equipx.png",    None),
-    ("gegrond",     "gegrond",   "gegrond.png",   None),
+    ("dotfiles",    "dotfiles",  None,              ""),  # gear
+    ("prepahead",   "prepahead", "prepahead.png",   None),
+    ("equipx",      "equipx",    "equipx.png",      None),
+    ("gegrond",     "gegrond",   "gegrond.png",     None),
     ("travelsmart", "travel",    "travelsmart.png", None),
     ("vault",       "vault",     "vault.png",       None),
 ]
-# Main-page session keys reuse a project's logo (when it has one) instead of the
-# session name, keyed by session name — so a running project shows its mark.
-SESSION_LOGOS = {name: logo for name, _label, logo, _glyph in WORK_PROJECTS if logo}
-GHOSTTY_CLASS = "com.mitchellh.ghostty"
+SPACE_LOGOS = {name: logo for name, _label, logo, _glyph in WORK_PROJECTS if logo}
 
-VPS_HOST_GLYPH = ""  # server — per-host key fallback when a host has no logo
-# VPS page — one key per SSH host, in this fixed order (muscle memory). Each entry
-# is (ssh_alias, label, logo_file | None, glyph). The alias is resolved from
-# ~/.ssh/config, so the handler just runs `ssh <alias>`. Pressing a key ALWAYS opens
-# a fresh ghostty running that ssh command. logo_file (in LOGO_DIR) renders as an
-# image; when it is None the glyph is drawn in the theme accent instead.
+# Machines for the VPS page: (hc machine name, label, logo file | None, glyph).
+# The name is one from `hc machine ls`; hc holds the ssh details.
 VPS_HOSTS = [
-    ("hostinger-server", "hostinger", "hostinger.png", None),
-    ("stargazer",        "stargazer", "stargazer.png", None),
+    ("hostinger", "hostinger", "hostinger.png", None),
+    ("stargazer", "stargazer", "stargazer.png", None),
 ]
 
-# Fallback palette (Nord-ish); live values pulled from the active theme below.
-COLORS = {
-    "alert":  (224, 112, 58),   # attn (rust) — needs you
-    "busy":   (236, 239, 244),  # fg0 (frost) — working
-    "slow":   (235, 203, 139),  # yellow — working past its typical time
-    "background": (129, 161, 193),  # blue — turn ended, agents/shells still run
-    "done":   (163, 190, 140),  # green — finished since you last looked (unseen)
-    "design": (136, 192, 208),  # accent — a design canvas exists
-    "idle":   (42, 46, 56),     # dim slate
-    "empty":  (12, 13, 16),     # near-black, no session
-    "action": (27, 31, 39),     # action-key background
-    "attach": (136, 192, 208),  # frost cyan — attached-session border
-    "live":   (163, 190, 140),  # green — a running (but unattached) session
-    "on":     (191, 97, 106),   # active toggle accent (MUTED)
-    "text":   (216, 222, 233),
-    "textdim": (120, 130, 150),
+# Each project's / machine's own colour, for its name on the keys (space name or hc
+# machine, lowercase). Brightened from the brand so it reads on a dark key; anything
+# not listed uses the plain text colour. "accent" follows the theme.
+NAME_COLORS = {
+    "prepahead":   "#5cc05c",   # leaf green
+    "travelsmart": "#e6b84a",   # gold
+    "vault":       "#a78bfa",   # obsidian purple
+    "equipx":      "#4d94ff",   # blue
+    "gegrond":     "#d4b483",   # sand
+    "immich-app":  "#7b8cff",   # immich indigo
+    "dotfiles":    "accent",
+    "hostinger":   "#8c6cf0",   # hostinger violet
+    "stargazer":   "#9fb6cc",   # steel
 }
 
-# Action keys 10-14: (glyph, label, active-state fn, handler fn). Defined after
-# the helpers they call; filled in at the bottom of the config section.
+PROJECT_FILES = [   # later files win, as in the sessions mod
+    Path.home() / ".config/herd/projects.json",
+    Path.home() / ".config/herdr-app/mods/sessions/projects.json",
+]
+
+# Fallback palette (Nord-ish); the status roles are overridden live from the theme.
+COLORS = {
+    "alert":      (224, 112, 58),   # attn (rust) — needs you
+    "busy":       (236, 239, 244),  # fg0 (frost) — working
+    "slow":       (235, 203, 139),  # yellow — working past its typical time
+    "background": (129, 161, 193),  # blue — turn ended, agents/shells still run
+    "done":       (163, 190, 140),  # green — finished since you last looked
+    "accent":     (136, 192, 208),  # theme accent — design key, glyph-only keys
+    "idle":       (90, 95, 105),    # tint for idle keys
+    "empty":      (12, 13, 16),     # blank key
+    "action":     (27, 31, 39),     # action-key background
+    "attach":     (136, 192, 208),  # border: the space herdr is showing
+    "live":       (163, 190, 140),  # border: an open but quiet space
+    "on":         (191, 97, 106),   # active toggle (muted)
+    "text":       (216, 222, 233),
+    "textdim":    (120, 130, 150),
+}
+
+# nerd-font glyphs
+G_SEARCH, G_EYEDROP, G_BRUSH = "", "", ""
+G_MIC, G_MIC_OFF = "", ""
+G_VOL, G_VOL_DOWN, G_VOL_OFF = "", "", ""
+G_MUSIC, G_BRIEFCASE, G_CLOUD, G_SERVER = "", "", "", ""
+G_ROBOT = "\U000f06a9"
+G_PREV, G_PLAY, G_PAUSE, G_NEXT, G_BACK = "", "", "", "", ""
+
+# The pipeline stages in the short vocabulary the rest of the tooling uses
+# (plan · build · review · docs · verify · PR); "implement-plan" doesn't fit a key.
+STAGE_SHORT = {
+    "start-ticket": "plan",    "frontend-start-ticket": "plan",
+    "implement-plan": "build", "frontend-implement-plan": "build",
+    "review": "review",        "frontend-review": "review",
+    "doc-drift": "docs",       "frontend-doc-drift": "docs",
+    "human-verification": "verify",
+    "raise-pr": "PR",          "frontend-raise-pr": "PR",
+}
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -126,54 +150,50 @@ def sh(*args, **kw):
 
 
 def spawn(*args):
-    """Fire-and-forget launch of a long-lived GUI process (e.g. ghostty).
+    """Fire-and-forget launch of a long-lived GUI process (the herdr window).
 
-    Must NOT use sh()/subprocess.run: those block until the process exits, and a
-    terminal we launch stays alive for as long as its window is open — which would
-    wedge the key-callback thread and freeze the whole deck.
-
-    Launch it in its OWN transient systemd scope (`systemd-run --user --scope`) so
-    the window lives outside this service's cgroup. Otherwise a plain child stays in
-    streamdeck-dashboard.service's cgroup and gets SIGTERM'd whenever the service is
-    restarted — taking the terminal window (and any tmux client in it) down with it.
-    The `--collect` cleans the scope up once the process exits. Fall back to a plain
-    detached Popen if systemd-run isn't available."""
+    In its OWN transient systemd scope, so the window lives outside this service's
+    cgroup and survives a restart of the dashboard. Falls back to a detached Popen."""
     if shutil.which("systemd-run"):
         args = ("systemd-run", "--user", "--scope", "--quiet", "--collect", *args)
     try:
-        subprocess.Popen(
-            args, start_new_session=True,
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+        subprocess.Popen(args, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         log("spawn failed:\n" + traceback.format_exc())
 
 
-def tmux(*args):
-    return sh("tmux", *args)
+def read_json(path, default=None):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return default
 
 
-# ── theme colours (reuse ~/.config/theme/sesh-colors.sh) ─────────────────────
+# ── theme ────────────────────────────────────────────────────────────────────
+def _hex(s):
+    s = s.strip().strip('"').strip("'").lstrip("#")
+    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+
+
 def load_theme():
-    """Status colours per docs/agent-board.md §4, from sesh-colors.sh. fg0 / blue were
-    added there with the board; until the next theme-switch they come from the fzf
-    colour string (fg+ is fg0, prompt is blue)."""
-    f = Path.home() / ".config/theme/sesh-colors.sh"
+    """Status colours (docs/agent-board.md §4) from ~/.config/theme/sesh-colors.sh,
+    which theme-switch rewrites; re-read every poll so a switch shows at once."""
     vals = {}
     try:
-        for line in f.read_text().splitlines():
-            line = line.strip().removeprefix("export ").strip()
-            k, eq, v = line.partition("=")
-            if eq:
-                vals[k] = v.strip().strip('"').strip("'")
-    except FileNotFoundError:
+        text = (Path.home() / ".config/theme/sesh-colors.sh").read_text()
+    except OSError:
         return
+    for line in text.splitlines():
+        k, eq, v = line.strip().removeprefix("export ").partition("=")
+        if eq:
+            vals[k.strip()] = v.strip().strip('"').strip("'")
     fzf = dict(p.split(":", 1) for p in vals.get("SESH_FZF_COLORS", "").split(",") if ":" in p)
     roles = {
         "alert": vals.get("SESH_ATTN_COLOR"),
         "slow": vals.get("SESH_BUSY_COLOR"),
         "done": vals.get("SESH_OK_COLOR"),
-        "design": vals.get("SESH_ACCENT_COLOR"),
+        "accent": vals.get("SESH_ACCENT_COLOR"),
         "busy": vals.get("SESH_FG0_COLOR") or fzf.get("fg+"),
         "background": vals.get("SESH_BLUE_COLOR") or fzf.get("prompt"),
     }
@@ -186,138 +206,15 @@ def load_theme():
     COLORS["on"] = COLORS["alert"]
 
 
-def _hex(s):
-    s = s.strip().strip('"').strip("'").lstrip("#")
-    return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-
-
-# ── fonts ────────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=None)
-def font(size):
-    for query in ("JetBrainsMono Nerd Font:bold", "monospace:bold"):
-        p = sh("fc-match", "-f", "%{file}", query).stdout.strip()
-        if p:
-            try:
-                return ImageFont.truetype(p, size)
-            except OSError:
-                pass
-    return ImageFont.load_default()
-
-
-# ── tmux state ───────────────────────────────────────────────────────────────
-def list_sessions():
-    r = tmux("list-sessions", "-F", "#{session_name}")
-    return sorted(n for n in r.stdout.splitlines() if n)
-
-
-def board_entries():
-    """`board list --json`: every Claude session, most urgent first (docs/agent-board.md)."""
-    r = sh("board", "list", "--json", timeout=8)
-    if r.returncode != 0:
-        return []
+def name_color(name, default=None):
+    """The colour for a project's or machine's name (NAME_COLORS), else `default`."""
+    c = NAME_COLORS.get((name or "").lower())
+    if c == "accent":
+        return COLORS["accent"]
     try:
-        data = json.loads(r.stdout)
+        return _hex(c) if c else default or COLORS["text"]
     except ValueError:
-        return []
-    return [e for e in data if isinstance(e, dict) and not e.get("stale")]
-
-
-def _board_label(e):
-    """The key band: what the session wants, or what it is doing, in a word or two."""
-    st, t = e.get("state"), e.get("ticket") or {}
-    if st == "needs_you":
-        a = e.get("attention") or {}
-        return a.get("title") or a.get("kind") or "needs you"
-    if st == "working":
-        cur = e.get("current") or {}
-        return t.get("stage") or cur.get("tool") or "working"
-    if st == "background":
-        n = sum(a.get("status") in ("running", "needs_you") for a in e.get("agents") or [])
-        return f"{n} agent{'s' if n != 1 else ''}" if n else "shells"
-    if e.get("unseen"):
-        return "done"
-    return t.get("stage") or ""
-
-
-def _board_status(e):
-    st = e.get("state")
-    if st == "needs_you":
-        return "alert"
-    if st == "working":
-        cur = e.get("current") or {}
-        typ, started = cur.get("typical_ms"), cur.get("started")
-        if typ and started and time.time() * 1000 - started > typ:
-            return "slow"
-        return "busy"
-    if st == "background":
-        return "background"
-    return "done" if e.get("unseen") else "idle"
-
-
-def session_states(entries=None):
-    """{name: (status, label, board_key)} for every tmux session that runs a Claude.
-
-    status is 'alert' | 'busy' | 'slow' | 'background' | 'done' | 'idle'. One
-    `board list --json` per poll; the board sorts its entries most-urgent first, so
-    the first entry for a session is the one its key shows. Sessions without a Claude
-    are simply absent (callers default them to idle)."""
-    out = {}
-    for e in board_entries() if entries is None else entries:
-        name = (e.get("tmux") or {}).get("session")
-        if name and name not in out:
-            out[name] = (_board_status(e), _board_label(e), e.get("key"), e)
-    return out
-
-
-def newest_design(entries):
-    """(board key, design) of the newest design canvas across sessions, or (None, None)."""
-    best = (None, None)
-    for e in entries:
-        for d in e.get("designs") or []:
-            if d.get("url") and (best[1] is None or (d.get("at") or 0) > (best[1].get("at") or 0)):
-                best = (e.get("key"), d)
-    return best
-
-
-def active_client():
-    """Name of the most-recently-active attached client, or None."""
-    r = tmux("list-clients", "-F", "#{client_activity} #{client_name}")
-    best, best_t = None, -1
-    for line in r.stdout.splitlines():
-        act, _, cname = line.partition(" ")
-        t = int(act) if act.isdigit() else 0
-        if t >= best_t and cname:
-            best, best_t = cname, t
-    return best
-
-
-def attached_session():
-    c = active_client()
-    if not c:
-        return None
-    return tmux("display-message", "-t", c, "-p", "#{session_name}").stdout.strip()
-
-
-def switch_to(name):
-    """Switch the terminal to a session and bring its window to the front.
-
-    Mirrors the work page (open_work): if a tmux client is attached, switch it and
-    focus the ghostty window; if nothing is attached anywhere, jump to workspace 1
-    and launch ghostty attached to the session."""
-    c = active_client()
-    if c:
-        tmux("switch-client", "-c", c, "-t", name)
-        focus_terminal()
-    else:
-        sh("hyprctl", "dispatch", "hl.dsp.focus({ workspace = 1 })")
-        spawn("ghostty", "-e", "sesh", "connect", name)
-
-
-# ── action handlers + live state ─────────────────────────────────────────────
-def open_picker():
-    c = active_client()
-    if c:
-        tmux(*PICKER_POPUP[:1], "-c", c, *PICKER_POPUP[1:])
+        return default or COLORS["text"]
 
 
 def theme_names():
@@ -339,83 +236,290 @@ def _palettes_dir():
         ts = shutil.which("theme-switch")
         if not ts:
             return None
-        # <repo>/bin/.local/bin/theme-switch -> repo root is four parents up
-        root = Path(os.path.realpath(ts)).parents[3]
+        root = Path(os.path.realpath(ts)).parents[3]   # <repo>/bin/.local/bin/theme-switch
     d = Path(root) / "themes" / "palettes"
     return d if d.is_dir() else None
 
 
 @lru_cache(maxsize=None)
 def theme_palette(name):
-    """Parse a palette .env into a {role: 'rrggbb'} dict (empty if not found)."""
+    """A palette .env as {role: 'rrggbb'} (empty if not found)."""
     pal, d = {}, _palettes_dir()
-    if d:
-        try:
-            for line in (d / f"{name}.env").read_text().splitlines():
-                line = line.strip()
-                if line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
+    if not d:
+        return pal
+    try:
+        for line in (d / f"{name}.env").read_text().splitlines():
+            k, eq, v = line.strip().partition("=")
+            if eq and not k.startswith("#"):
                 pal[k.strip()] = v.strip().strip('"').strip("'")
-        except OSError:
-            pass
+    except OSError:
+        pass
     return pal
 
 
-def mic_muted():
-    return "MUTED" in sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SOURCE@").stdout
+# ── audio + media ────────────────────────────────────────────────────────────
+def muted(target):
+    return "MUTED" in sh("wpctl", "get-volume", target).stdout
 
 
-def sink_muted():
-    return "MUTED" in sh("wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@").stdout
+def toggle_mute(target):
+    sh("wpctl", "set-mute", target, "toggle")
 
 
-# ── work page (project launcher) ─────────────────────────────────────────────
-def has_session(name):
-    return tmux("has-session", "-t", f"={name}").returncode == 0
+MIC, SINK = "@DEFAULT_AUDIO_SOURCE@", "@DEFAULT_AUDIO_SINK@"
 
 
-def current_accent():
-    """The active theme's accent colour (for glyph-only project keys)."""
-    pal = theme_palette(active_theme())
-    return _hex(pal["accent"]) if pal.get("accent") else COLORS["attach"]
+def player_playing():
+    return sh("playerctl", "status").stdout.strip() == "Playing"
 
 
-def focus_terminal():
-    """Bring a terminal window to the front (focus any ghostty)."""
-    sh("hyprctl", "dispatch", f'hl.dsp.focus({{ window = "class:{GHOSTTY_CLASS}" }})')
+def volume(delta):
+    sh("wpctl", "set-volume", "-l", "1.5", SINK, delta)
 
 
-def open_work(name):
-    """Open a project's tmux session and focus a terminal on it.
+# ── herdr state ──────────────────────────────────────────────────────────────
+# A space is {id, name, machine, active, agents, status}; agents are the terminals
+# that run a coding agent, most urgent first: {terminal, status, entry}.
+# status is one of these, most urgent first (herdr's own order: blocked > done >
+# working > idle, with working split by the board into slow / busy / background).
+RANK = {"alert": 0, "done": 1, "slow": 2, "busy": 3, "background": 4, "idle": 5}
+ACTIVE = ("alert", "slow", "busy", "background")
 
-    If a terminal (tmux client) is open, `sesh connect -s` creates the session
-    when missing — honouring the sesh.toml startup_command — and *switches* the
-    most-recently-active client to it (works even though this daemon runs outside
-    tmux), then we focus the terminal. If no client is attached anywhere, jump to
-    workspace 1 and launch ghostty attached to the session (a fresh TTY, so sesh
-    attaches, creating the session first if it doesn't exist)."""
-    if active_client():
-        sh("sesh", "connect", "-s", name)
-        focus_terminal()
+
+def herdr_ls():
+    """The open window's spaces (`herdr-app ls`), or None when the window is closed."""
+    r = sh("herdr-app", "ls", timeout=5)
+    if r.returncode != 0:
+        return None
+    try:
+        data = json.loads(r.stdout)
+    except ValueError:
+        return None
+    return data.get("spaces") if isinstance(data, dict) else None
+
+
+def hc_spaces():
+    """Window closed: rebuild the spaces from hc's live terminals, whose `where` is
+    "space / tab". No ids, so a press resolves the space by name once herdr is up."""
+    r = sh("hc", "ls", "--json", timeout=5)
+    try:
+        terms = json.loads(r.stdout).get("terminals") or []
+    except (ValueError, AttributeError):
+        return []
+    spaces = {}
+    for t in terms:
+        if t.get("state") != "live" or " / " not in (t.get("where") or ""):
+            continue
+        name, tab = t["where"].split(" / ", 1)
+        status = t.get("status")
+        if isinstance(status, dict):
+            status = status.get("state")
+        s = spaces.setdefault(name, {"id": None, "name": name, "machine": None,
+                                     "active": False, "tabs": []})
+        s["tabs"].append({"name": tab, "terminals": [
+            {"terminal": t.get("address"), "status": status, "app": t.get("agent") if status else None}]})
+    return list(spaces.values())
+
+
+def board_entries():
+    """`board list --json`: every Claude session, most urgent first (docs/agent-board.md)."""
+    r = sh("board", "list", "--json", timeout=8)
+    try:
+        data = json.loads(r.stdout) if r.returncode == 0 else []
+    except ValueError:
+        return []
+    return [e for e in data if isinstance(e, dict) and not e.get("stale")]
+
+
+def hc_terminal(pid):
+    """The hc terminal a process runs in (its HC_TERMINAL_ID), or None. This is how a
+    board entry, which knows its Claude's pid, is matched to herdr's terminal."""
+    try:
+        env = Path(f"/proc/{int(pid)}/environ").read_bytes()
+    except (OSError, TypeError, ValueError):
+        return None
+    for kv in env.split(b"\0"):
+        if kv.startswith(b"HC_TERMINAL_ID="):
+            return kv[15:].decode() or None
+    return None
+
+
+def agent_status(herdr_status, entry):
+    """herdr's status for the terminal, refined by its board entry (slow, background);
+    the board alone when herdr has none."""
+    e = entry or {}
+    if not herdr_status and e:
+        herdr_status = {"needs_you": "blocked", "working": "working"}.get(e.get("state")) \
+            or ("done" if e.get("unseen") else "idle")
+    if herdr_status in ("blocked", "error"):
+        return "alert"
+    if herdr_status == "working":
+        cur = e.get("current") or {}
+        typ, started = cur.get("typical_ms"), cur.get("started")
+        return "slow" if typ and started and time.time() * 1000 - started > typ else "busy"
+    if e.get("state") == "background":
+        return "background"
+    return "done" if herdr_status == "done" else "idle"
+
+
+def load_state():
+    """(spaces, window open?, board entries) — one herdr read and one board read."""
+    raw = herdr_ls()
+    window = raw is not None
+    if raw is None:
+        raw = hc_spaces()
+    entries = board_entries()
+    by_terminal = {}
+    for e in entries:
+        t = hc_terminal(e.get("pid"))
+        if t:
+            by_terminal.setdefault(t, e)
+    spaces, seq = [], 0
+    for s in raw:
+        agents = []
+        for tab in s.get("tabs") or []:
+            for t in tab.get("terminals") or []:
+                e = by_terminal.get(t.get("terminal"))
+                if t.get("app") or t.get("status") or e:
+                    agents.append({"terminal": t.get("terminal"), "entry": e,
+                                   "space": s.get("name") or "", "tab": tab.get("name") or "",
+                                   "shown": window and bool(s.get("active") and tab.get("active")),
+                                   "status": agent_status(t.get("status"), e), "seq": seq})
+                    seq += 1
+        agents.sort(key=lambda a: RANK[a["status"]])   # stable: tab order within a rank
+        spaces.append({"id": s.get("id"), "name": s.get("name") or "", "machine": s.get("machine"),
+                       "active": window and bool(s.get("active")), "agents": agents,
+                       "status": agents[0]["status"] if agents else "idle"})
+    return spaces, window, entries
+
+
+def pick(items, n):
+    """Up to n spaces or agents, kept in herdr's order. With more than n, the ones
+    that want you (needs you, then finished) are guaranteed a key before busy and idle
+    ones — a glance is meant to say who needs you."""
+    if len(items) <= n:
+        return items
+    tier = {"alert": 0, "done": 1, "idle": 3}
+    keep = sorted(range(len(items)), key=lambda i: (tier.get(items[i]["status"], 2), i))[:n]
+    return [items[i] for i in sorted(keep)]
+
+
+def newest_design(entries):
+    """The newest design canvas's board key across sessions, or None."""
+    best_at, best_key = None, None
+    for e in entries:
+        for d in e.get("designs") or []:
+            if d.get("url") and (best_at is None or (d.get("at") or 0) > best_at):
+                best_at, best_key = d.get("at") or 0, e.get("key")
+    return best_key
+
+
+def project_paths():
+    """{space name: folder} for the WORK page, as herdr's sessions picker builds it."""
+    out = {}
+    herd = read_json(PROJECT_FILES[0], {}) or {}
+    for name, p in herd.items():
+        if isinstance(p, dict) and p.get("root") and not name.startswith("//"):
+            out[name.lower()] = p["root"].rstrip("/") + ("/" + p["workdir"] if p.get("workdir") else "")
+    for p in (read_json(PROJECT_FILES[1], {}) or {}).get("projects") or []:
+        if p.get("name") and p.get("path"):
+            out[p["name"].lower()] = p["path"]
+    return {k: os.path.expanduser(v) for k, v in out.items()}
+
+
+# ── herdr actions ────────────────────────────────────────────────────────────
+def herdr_do(cmd, **args):
+    r = sh("herdr-app", "do", cmd, json.dumps(args), timeout=10)
+    if r.returncode != 0:
+        log(f"herdr-app do {cmd} failed: {(r.stdout or r.stderr).strip()}")
+    return r.returncode == 0
+
+
+def present(action):
+    """Run `action` against the herdr window and bring it to the front — opening the
+    window first when it's closed (hc kept the terminals running). On a thread, so a
+    slow window start never freezes the deck."""
+    def go():
+        if herdr_ls() is None:
+            spawn("herdr-app")
+            deadline = time.time() + 15
+            while herdr_ls() is None and time.time() < deadline:
+                time.sleep(0.3)
+        try:
+            action()
+        finally:
+            sh("hyprctl", "dispatch", f'hl.dsp.focus({{ window = "class:{HERDR_CLASS}" }})')
+    threading.Thread(target=go, daemon=True).start()
+
+
+def select_space(match):
+    """Show the first open space for which match(space) is true; False if none."""
+    for s in herdr_ls() or []:
+        if match(s):
+            return herdr_do("space.select", id=s["id"])
+    return False
+
+
+def by_name(name):
+    return lambda s: (s.get("name") or "").lower() == name.lower()
+
+
+def open_space(space):
+    """Main-page press: show the space's most urgent agent that's doing anything, or
+    just the space (keeping whichever tab it had) when all its agents are idle."""
+    top = next((a for a in space["agents"] if a["status"] != "idle"), None)
+    if top and top["terminal"]:
+        present(lambda: herdr_do("agent.focus", terminal=top["terminal"]))
     else:
-        sh("hyprctl", "dispatch", "hl.dsp.focus({ workspace = 1 })")
-        spawn("ghostty", "-e", "sesh", "connect", name)
+        present(lambda: select_space(by_name(space["name"])))
 
 
-def open_vps(alias):
-    """Always open a fresh ghostty running `ssh <alias>`.
+def open_agent(agent):
+    """Agents-page press: show that agent; the page stays up."""
+    present(lambda: herdr_do("agent.focus", terminal=agent["terminal"]))
 
-    Unlike the work page (which switches an existing tmux client when one is
-    attached), a VPS press unconditionally spawns a new ghostty window per press —
-    each SSH session gets its own terminal. The alias is resolved from
-    ~/.ssh/config, so ghostty just execs `ssh <alias>`."""
-    spawn("ghostty", "-e", "ssh", alias)
+
+def open_project(name):
+    """WORK press: show the project's space, or open one in its folder with claude
+    running (what herdr's sessions picker does)."""
+    def act():
+        if not select_space(by_name(name)):
+            args = {"name": name, "argv": ["claude"], "machine": ""}
+            folder = project_paths().get(name.lower())
+            if folder:
+                args["folder"] = folder
+            else:
+                log(f"no folder for project {name!r} in {', '.join(map(str, PROJECT_FILES))}")
+            herdr_do("space.new", **args)
+    present(act)
+
+
+def open_machine(machine, label):
+    """VPS press: show a space on that hc machine, or open one."""
+    present(lambda: select_space(lambda s: s.get("machine") == machine)
+            or herdr_do("space.new", name=label, machine=machine))
+
+
+def open_picker():
+    present(lambda: herdr_do("mod.open", name=PICKER_MOD))
+
+
+# ── rendering ────────────────────────────────────────────────────────────────
+@lru_cache(maxsize=None)
+def font(size):
+    for query in ("JetBrainsMono Nerd Font:bold", "monospace:bold"):
+        p = sh("fc-match", "-f", "%{file}", query).stdout.strip()
+        if p:
+            try:
+                return ImageFont.truetype(p, size)
+            except OSError:
+                pass
+    return ImageFont.load_default()
 
 
 @lru_cache(maxsize=None)
 def load_logo(size, filename):
-    """Load a project logo scaled to fit the key, or None if it's missing."""
+    """A logo scaled to fit the key, or None if it's missing."""
     try:
         img = Image.open(LOGO_DIR / filename).convert("RGBA")
     except Exception:
@@ -425,78 +529,19 @@ def load_logo(size, filename):
     return img
 
 
-# glyph, label, is-active (or None), on-press
-ACTIONS = {
-    10: ("", "PICK",  None,        open_picker),
-    11: ("", "THEME", None,        None),  # THEME_KEY -> opens the theme picker page
-    13: ("", "MIC",   mic_muted,   lambda: sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle")),
-    14: ("", "MUTE",  sink_muted,  lambda: sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")),
-}
-# glyph shown when a toggle is active (muted)
-ACTIVE_GLYPH = {13: "", 14: ""}  # mic-slash, volume-off
-
-WORK_GLYPH = "\uf0b1"   # briefcase — main-page key that opens the work page
-VPS_GLYPH = ""   # cloud — main-page key that opens the VPS page
-# The MEDIA key on the main page (key 5) opens the media page below.
-MEDIA_GLYPH = ""  # music note
+def _canvas(deck, bg):
+    w, h = deck.key_image_format()["size"]
+    img = bg if isinstance(bg, Image.Image) else Image.new("RGB", (w, h), bg)
+    return img, ImageDraw.Draw(img), w, h
 
 
-# ── media page (playerctl transport + wpctl volume) ──────────────────
-def player_playing():
-    return sh("playerctl", "status").stdout.strip() == "Playing"
+def _done(deck, img):
+    return PILHelper.to_native_key_format(deck, img)
 
 
-def _vol(delta):
-    return lambda: sh("wpctl", "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", delta)
-
-
-# key -> (glyph, label, is-active (or None), on-press). The play/pause key (2)
-# swaps glyph+label on player status; BACK (10) has a None handler -> main page.
-MEDIA_ACTIONS = {
-    1: ("", "PREV", None,       lambda: sh("playerctl", "previous")),
-    2: ("", "PLAY", None,       lambda: sh("playerctl", "play-pause")),
-    3: ("", "NEXT", None,       lambda: sh("playerctl", "next")),
-    7: ("", "VOL-", None,       _vol("5%-")),
-    8: ("", "VOL+", None,       _vol("5%+")),
-    6: ("", "MUTE", sink_muted, lambda: sh("wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle")),
-    10: ("", "BACK", None,      None),
-}
-MEDIA_ACTIVE_GLYPH = {6: ""}  # volume-off when muted
-# Playing state swaps key 1 to a pause glyph + PAUSE label.
-MEDIA_PLAYING = ("", "PAUSE")
-
-
-# ── rendering ────────────────────────────────────────────────────────────────
-def key_size(deck):
-    return deck.key_image_format()["size"]
-
-
-# The six pipeline stages, in the same short vocabulary the sesh picker's rail uses
-# (plan · build · review · docs · verify · PR), so the deck and the picker name a stage
-# the same way. A 72px key truncates "implement-plan" to "implement-p…", which wastes
-# the band on a word you already knew; "build" fits whole.
-STAGE_SHORT = {
-    "start-ticket": "plan",   "frontend-start-ticket": "plan",
-    "implement-plan": "build", "frontend-implement-plan": "build",
-    "review": "review",       "frontend-review": "review",
-    "doc-drift": "docs",      "frontend-doc-drift": "docs",
-    "human-verification": "verify",
-    "raise-pr": "PR",         "frontend-raise-pr": "PR",
-}
-
-
-def _short_label(label):
-    """Shorten a status label to something that fits a key band.
-
-    An escalation label is `<kind> · <stage>` (see frontend-pipeline's step 5), and the
-    kind is the half that says what is actually being asked — so when the whole thing
-    won't fit, the stage is what goes."""
-    if not label:
-        return ""
-    parts = [p.strip() for p in label.split("·")]
-    parts = [STAGE_SHORT.get(p, p) for p in parts]
-    short = " · ".join(p for p in parts if p)
-    return short if len(short) <= 16 else parts[0]
+def _border(d, w, h, color, width=4, inset=0):
+    if color:
+        d.rectangle([inset, inset, w - 1 - inset, h - 1 - inset], outline=color, width=width)
 
 
 def _fit(draw, text, f, maxw):
@@ -508,101 +553,16 @@ def _fit(draw, text, f, maxw):
     return (text + "…") if text else ""
 
 
-def render_session(deck, name, status, attached, label=""):
-    """A session key: the name (or the project's logo) over a band carrying the
-    pipeline stage or Claude's reason for wanting you — 'plan-brief', 'implement-plan',
-    'allow Bash?'. The colour already says needs-you / working / done; the band is what
-    says *which ticket state*, which is the thing you'd otherwise have to attach to
-    find out. Keys are 72x72, so the band is one truncated line and no more."""
-    w, h = key_size(deck)
-    if name and status == "idle":   # match the Claude keys' dark fade
-        img = _gradient(w, h, (90, 95, 105), top=0.24)
-    else:
-        img = Image.new("RGB", (w, h), COLORS[status if name else "empty"])
-    d = ImageDraw.Draw(img)
-    label = _short_label(label)
-    if name:
-        band = 18 if label else 0
-        body = (w, h - band)
-        logo = load_logo(body, SESSION_LOGOS[name]) if name in SESSION_LOGOS else None
-        if logo:
-            img.paste(logo, (int((w - logo.width) / 2), int((h - band - logo.height) / 2)), logo)
-        else:
-            fg = (30, 30, 30) if _light(COLORS[status]) else COLORS["text"]
-            _draw_wrapped(d, name, body, fg, 15)
-        if label:
-            d.rectangle([0, h - band, w, h], fill=_shade(COLORS[status]))
-            f = font(11)
-            for fs in (11, 10, 9):
-                f = font(fs)
-                if d.textlength(label, font=f) <= w - 6:
-                    break
-            d.text((w / 2, h - band / 2), _fit(d, label, f, w - 6), font=f,
-                   fill=COLORS["text"], anchor="mm")
-    if attached:
-        d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["attach"], width=4)
-    return PILHelper.to_native_key_format(deck, img)
-
-
-def _elapsed(ms):
-    """Epoch-ms start → 'm:ss' / 'h:mm' since then; '' when unknown."""
-    if not ms:
-        return ""
-    s = max(0, int(time.time() - ms / 1000))
-    if s >= 3600:
-        return f"{s // 3600}:{s % 3600 // 60:02d}h"
-    return f"{s // 60}:{s % 60:02d}"
-
-
-def _ago(ms):
-    if not ms:
-        return ""
-    m = max(0, int(time.time() - ms / 1000)) // 60
-    return f"{m}m ago" if m < 60 else f"{m // 60}h ago"
-
-
-def _board_card(e, status):
-    """What a Claude session key shows, as plain data (also the render-cache signature):
-    title, detail line, big timer, and the stage + task strips as cell codes
-    ('d' done, 'r' running, 'a' needs you, 's' slow, '' pending)."""
-    t = e.get("ticket") or {}
-    name = (e.get("tmux") or {}).get("session") or ""
-    title = f"#{t['issue']}" if t.get("issue") else name
-    st = e.get("state")
-    detail, timer = "", ""
-    if st == "needs_you":
-        a = e.get("attention") or {}
-        detail = a.get("title") or {"permission": "permission", "plan": "plan"}.get(a.get("kind"), "needs you")
-        timer = _elapsed(a.get("since") or e.get("since"))
-    elif st == "working":
-        cur = e.get("current") or {}
-        detail = cur.get("detail") or cur.get("tool") or STAGE_SHORT.get(t.get("stage"), t.get("stage") or "working")
-        timer = _elapsed(cur.get("started") or e.get("since"))
-    elif st == "background":
-        running = [a for a in e.get("agents") or [] if a.get("status") in ("running", "needs_you")]
-        shells = [s for s in e.get("shells") or [] if s.get("status") == "running"]
-        n = len(running) or len(shells)
-        detail = f"{n} agent{'s' if n != 1 else ''}" if running else f"{n} shell{'s' if n != 1 else ''}"
-        starts = [x.get("started") for x in running + shells if x.get("started")]
-        timer = _elapsed(min(starts)) if starts else ""
-    else:
-        detail = "✓ done" if e.get("unseen") else (STAGE_SHORT.get(t.get("stage"), t.get("stage") or "idle"))
-        timer = _ago(e.get("finished_at")) if e.get("unseen") else ""
-
-    now_cell = {"alert": "a", "slow": "s"}.get(status, "r" if st in ("working", "background") else "d")
-    stages = ()
-    si, stot = t.get("stage_index"), t.get("stage_total")
-    if si and stot:
-        stages = tuple("d" if i < si else now_cell if i == si else "" for i in range(1, stot + 1))
-    tasks = ()
-    td, tt = t.get("tasks_done"), t.get("tasks_total")
-    if tt and td is not None and td < tt:
-        tasks = tuple("d" if i < td else "r" if i == td else "" for i in range(tt))
-    return title, detail, timer, stages, tasks
+def _sized(draw, text, sizes, maxw):
+    """The largest font in `sizes` that fits text in maxw (else the smallest)."""
+    for fs in sizes:
+        if draw.textlength(text, font=font(fs)) <= maxw:
+            return font(fs)
+    return font(sizes[-1])
 
 
 def _gradient(w, h, rgb, top=0.30, bottom=0.03):
-    """Diagonal fade from a tint of the status colour to near-black, like the mockup keys."""
+    """Diagonal fade from a tint of the status colour to near-black."""
     img = Image.new("RGB", (w, h))
     px = img.load()
     for y in range(h):
@@ -612,196 +572,34 @@ def _gradient(w, h, rgb, top=0.30, bottom=0.03):
     return img
 
 
-def _strip(d, x0, y0, w, h, cells, colors):
+def _strip(d, x0, y0, w, h, cells):
+    """A row of progress cells: 'd' done, 'r' running, 's' slow, 'a' needs you, '' ahead."""
     if not cells:
         return
-    # Long task lists don't fit 1px cells plus gaps on a 72px key: drop the gaps, and
-    # never let a cell collapse below 1px (Pillow rejects x1 < x0).
-    gap = 1 if 2 * len(cells) - 1 <= w else 0
+    gap = 1 if 2 * len(cells) - 1 <= w else 0   # long task lists drop the gaps
     cw = (w - gap * (len(cells) - 1)) / len(cells)
     for i, c in enumerate(cells):
         x = x0 + i * (cw + gap)
         box = [round(x), y0, max(round(x), round(x + cw) - 1), y0 + h - 1]
         if c == "a":
-            d.rectangle(box, outline=colors["alert"], width=1)
+            d.rectangle(box, outline=COLORS["alert"], width=1)
         else:
-            d.rectangle(box, fill={"d": colors["done"], "r": colors["busy"], "s": colors["slow"]}.get(c, (52, 55, 60)))
+            fill = {"d": COLORS["done"], "r": COLORS["busy"], "s": COLORS["slow"]}.get(c, (52, 55, 60))
+            d.rectangle(box, fill=fill)
 
 
-def render_session_board(deck, card, status, attached, pulse):
-    """A session key that runs a Claude, drawn like the agent-board mockup: state-tinted
-    gradient, ticket number, what it's doing, a ticking timer, then the six-stage strip
-    and (while implementing) the task strip. Needs-you keys get a rose border that
-    pulses with the poll."""
-    title, detail, timer, stages, tasks = card
-    w, h = key_size(deck)
-    col = COLORS.get(status, COLORS["idle"])
-    tint = col if status not in ("idle",) else (90, 95, 105)
-    img = _gradient(w, h, tint, top=0.34 if status == "alert" else 0.24)
-    d = ImageDraw.Draw(img)
-    pad = 6
-    bright = (241, 244, 247)
-
-    f = font(13)
-    for fs in (13, 12, 11, 10):
-        f = font(fs)
-        if d.textlength(title, font=f) <= w - 2 * pad:
-            break
-    d.text((pad, pad - 1), _fit(d, title, f, w - 2 * pad), font=f, fill=bright, anchor="la")
-
-    dcol = col if status in ("alert", "background", "done", "slow") else COLORS["textdim"]
-    if status == "busy":
-        dcol = (200, 206, 214)
-    d.text((pad, 21), _fit(d, detail, font(9), w - 2 * pad), font=font(9), fill=dcol, anchor="la")
-
-    strips = [s for s in (tasks, stages) if s]
-    bottom = h - pad - (len(strips) * 6 + max(0, len(strips) - 1) * 3)
-    if timer:
-        tf = font(17) if len(timer) <= 5 else font(14)
-        tcol = bright if status == "busy" else col if status != "idle" else COLORS["textdim"]
-        if status == "done":
-            tf, tcol = font(10), COLORS["textdim"]
-        d.text((pad, bottom - 3), timer, font=tf, fill=tcol, anchor="lb")
-
-    y = bottom + 2
-    for s in strips:
-        _strip(d, pad, y, w - 2 * pad, 5, s, COLORS)
-        y += 8
-
-    if status == "alert":
-        a = COLORS["alert"]
-        rim = a if pulse else tuple(int(c * 0.55) for c in a)
-        d.rectangle([0, 0, w - 1, h - 1], outline=rim, width=3)
-    if attached:
-        d.rectangle([1, 1, w - 2, h - 2], outline=COLORS["attach"], width=2)
-    return PILHelper.to_native_key_format(deck, img)
-
-
-def _light(rgb):
-    """True for a key background light enough to need dark text (frost, yellow, green)."""
-    r, g, b = rgb
-    return 0.299 * r + 0.587 * g + 0.114 * b > 150
-
-
-def _shade(rgb, factor=0.45):
-    """Darken a key background for the label band, so the band reads as part of the
-    same key rather than a second colour."""
-    return tuple(max(0, int(c * factor)) for c in rgb)
-
-
-def render_action(deck, glyph, label, active):
-    w, h = key_size(deck)
-    img = Image.new("RGB", (w, h), COLORS["action"])
-    d = ImageDraw.Draw(img)
-    accent = COLORS["on"] if active else COLORS["text"]
-    gy = font(30)
-    d.text((w / 2, h * 0.40), glyph, font=gy, fill=accent, anchor="mm")
-    d.text((w / 2, h * 0.82), label, font=font(12), fill=COLORS["textdim"], anchor="mm")
-    return PILHelper.to_native_key_format(deck, img)
-
-
-DESIGN_GLYPH = "\uf1fc"  # paint brush
-
-
-def render_design(deck, has_design):
-    """The DESIGN key: the brush in the theme accent (with an accent border) when a
-    design canvas exists, dim otherwise."""
-    w, h = key_size(deck)
-    img = Image.new("RGB", (w, h), COLORS["action"])
-    d = ImageDraw.Draw(img)
-    col = COLORS["design"] if has_design else COLORS["textdim"]
-    d.text((w / 2, h * 0.40), DESIGN_GLYPH, font=font(30), fill=col, anchor="mm")
-    d.text((w / 2, h * 0.82), "DESIGN", font=font(12), fill=COLORS["textdim"], anchor="mm")
-    if has_design:
-        d.rectangle([0, 0, w - 1, h - 1], outline=COLORS["design"], width=3)
-    return PILHelper.to_native_key_format(deck, img)
-
-
-def render_blank(deck):
-    w, h = key_size(deck)
-    return PILHelper.to_native_key_format(deck, Image.new("RGB", (w, h), COLORS["empty"]))
-
-
-def render_work(deck, label, logo_file, glyph, accent, live, status, attached):
-    """A work-page project key: its logo (or a glyph in the theme accent) above
-    the project name. The border shows session state — cyan when it's the client's
-    attached session, else rust/amber for Claude alert/busy or green when merely
-    running; no border when the session isn't live."""
-    w, h = key_size(deck)
-    img = Image.new("RGB", (w, h), COLORS["action"])
-    d = ImageDraw.Draw(img)
-    logo = load_logo((w, h), logo_file) if logo_file else None
-    if logo:
-        img.paste(logo, (int((w - logo.width) / 2), int(h * 0.42 - logo.height / 2)), logo)
-    else:  # no logo file (or it's missing) — fall back to the glyph
-        d.text((w / 2, h * 0.40), glyph or "", font=font(30), fill=accent, anchor="mm")
-    d.text((w / 2, h * 0.86), label, font=font(12), fill=COLORS["textdim"], anchor="mm")
-    if attached:
-        border = COLORS["attach"]
-    elif live:
-        border = COLORS[status] if status in ("alert", "busy", "slow", "background") else COLORS["live"]
-    else:
-        border = None
-    if border:
-        d.rectangle([0, 0, w - 1, h - 1], outline=border, width=4)
-    return PILHelper.to_native_key_format(deck, img)
-
-
-THEME_ICON = ""  # eyedropper / colour picker
-
-
-def render_theme(deck, name, active):
-    """A theme key: its own bg0 background, a colour-picker icon and the name in
-    the theme's own accent colour, plus an accent border when it's the active one."""
-    w, h = key_size(deck)
-    pal = theme_palette(name)
-    bg = _hex(pal.get("bg0", "1b1f27"))
-    accent = _hex(pal.get("accent", "88c0d0"))
-    img = Image.new("RGB", (w, h), bg)
-    d = ImageDraw.Draw(img)
-
-    d.text((w / 2, h * 0.36), THEME_ICON, font=font(28), fill=accent, anchor="mm")
-
-    # split the name on its hyphen so "vscode-dark" reads as two tidy lines
-    parts = name.split("-")
-    lines = (parts if len(parts) <= 2 else [parts[0], "-".join(parts[1:])])[:2]
-    f = font(13)
-    y = h * 0.74 - len(lines) * 15 / 2 + 7.5
-    for ln in lines:
-        d.text((w / 2, y), ln, font=f, fill=accent, anchor="mm")
-        y += 15
-
-    if active:
-        d.rectangle([0, 0, w - 1, h - 1], outline=accent, width=4)
-    return PILHelper.to_native_key_format(deck, img)
-
-
-def _draw_wrapped(draw, text, size, fill, fontsize, minsize=10):
-    """Draw `text` centred in `size`, shrinking the font to keep it on ONE line
-    before resorting to wrapping.
-
-    The per-character wrap this used to do unconditionally split names mid-word at
-    the key's width — `issue-559` came out as "issue-5 / 59" and `dotfiles` as
-    "dotfile / s", which is harder to read at a glance than the same name two points
-    smaller. Try each size down to `minsize` first; only wrap when even the smallest
-    won't fit, and then prefer a break at a separator over a mid-word one."""
+def _draw_wrapped(draw, text, size, fill, fontsize, minsize=10, y0=0):
+    """Draw text centred in `size`, shrinking it to stay on one line before wrapping;
+    a wrap prefers a separator (issue-559 → "issue- / 559") over a mid-word break."""
     w, h = size
     avail = w - 8
-
     for fs in range(fontsize, minsize - 1, -1):
-        f = font(fs)
-        if draw.textlength(text, font=f) <= avail:
-            draw.text((w / 2, h / 2), text, font=f, fill=fill, anchor="mm")
+        if draw.textlength(text, font=font(fs)) <= avail:
+            draw.text((w / 2, y0 + h / 2), text, font=font(fs), fill=fill, anchor="mm")
             return
-
-    fs = minsize
-    f = font(fs)
-    # Prefer breaking where a human would: at the last separator that still fits.
-    head = ""
-    for i in range(len(text), 0, -1):
-        if text[i - 1] in "-_ ./" and draw.textlength(text[:i], font=f) <= avail:
-            head = text[:i]
-            break
+    f = font(minsize)
+    head = next((text[:i] for i in range(len(text), 0, -1)
+                 if text[i - 1] in "-_ ./" and draw.textlength(text[:i], font=f) <= avail), "")
     if head:
         lines = [head.rstrip(), text[len(head):]]
     else:
@@ -812,279 +610,361 @@ def _draw_wrapped(draw, text, size, fill, fontsize, minsize=10):
             else:
                 lines.append(cur)
                 cur = ch
-            if len(lines) == 2:
-                break
-        if cur and len(lines) < 2:
-            lines.append(cur)
-    lines = [ln for ln in lines[:2] if ln]
-
-    total = len(lines) * (fs + 2)
-    y = (h - total) / 2 + fs / 2
+        lines.append(cur)
+    lines = [_fit(draw, ln, f, avail) for ln in lines[:2] if ln]
+    y = y0 + (h - len(lines) * (minsize + 2)) / 2 + minsize / 2
     for ln in lines:
         draw.text((w / 2, y), ln, font=f, fill=fill, anchor="mm")
-        y += fs + 2
+        y += minsize + 2
 
 
-# ── main loop ────────────────────────────────────────────────────────────────
+def _short_label(label):
+    """Fit a status label to a key: stage names shortened, and of an escalation label
+    `<kind> · <stage>` keep the kind (what is being asked) when both won't fit."""
+    parts = [STAGE_SHORT.get(p.strip(), p.strip()) for p in (label or "").split("·")]
+    short = " · ".join(p for p in parts if p)
+    return short if len(short) <= 16 else parts[0]
+
+
+def _elapsed(ms):
+    """Epoch-ms start → 'm:ss' / 'h:mmh' since then; '' when unknown."""
+    if not ms:
+        return ""
+    s = max(0, int(time.time() - ms / 1000))
+    return f"{s // 3600}:{s % 3600 // 60:02d}h" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+def _ago(ms):
+    if not ms:
+        return ""
+    m = max(0, int(time.time() - ms / 1000)) // 60
+    return f"{m}m ago" if m < 60 else f"{m // 60}h ago"
+
+
+def space_card(space):
+    """A main-page space key: its most urgent agent's card, titled with the space."""
+    agents = space["agents"]
+    return card(space["name"], space["status"], (agents[0]["entry"] if agents else None) or {},
+                more=sum(a["status"] in ACTIVE for a in agents),
+                done_n=sum(a["status"] == "done" for a in agents))
+
+
+def agent_card(agent):
+    """An agents-page key: one agent, titled by its ticket, else its tab's name (herd
+    names tabs "#2219 stored flight dates"), else its space."""
+    e = agent["entry"] or {}
+    issue = (e.get("ticket") or {}).get("issue")
+    tab = agent["tab"]
+    generic = not tab or tab.isdigit() or tab in ("shell", "claude")
+    title = f"#{issue}" if issue else agent["space"] if generic else tab
+    return card(title, agent["status"], e, color_of=agent["space"], logo=False)
+
+
+def card(title, status, e, more=0, done_n=1, color_of=None, logo=True):
+    """What a status key shows, as plain data (also its render signature):
+    (title, status, detail, timer, issue, stages, tasks, more, title colour). A quiet
+    key (finished or idle) has no timer and its detail is the band label."""
+    t = e.get("ticket") or {}
+    stage = STAGE_SHORT.get(t.get("stage"), t.get("stage") or "")
+    issue = f"#{t['issue']}" if t.get("issue") else ""
+    if issue and title.startswith(issue):
+        issue = ""
+    stages = tasks = ()
+    detail, timer = "", ""
+
+    if status == "alert":
+        a = e.get("attention") or {}
+        detail = a.get("title") or {"permission": "permission", "plan": "plan"}.get(a.get("kind"), "needs you")
+        timer = _elapsed(a.get("since") or e.get("since")) or "!"
+    elif status in ("busy", "slow"):
+        cur = e.get("current") or {}
+        detail = cur.get("detail") or cur.get("tool") or stage or "working"
+        timer = _elapsed(cur.get("started") or e.get("since")) or "…"
+    elif status == "background":
+        running = [a for a in e.get("agents") or [] if a.get("status") in ("running", "needs_you")]
+        shells = [s for s in e.get("shells") or [] if s.get("status") == "running"]
+        n, what = (len(running), "agent") if running else (len(shells), "shell")
+        detail = f"{n} {what}{'s' if n != 1 else ''}"
+        starts = [x.get("started") for x in running + shells if x.get("started")]
+        timer = _elapsed(min(starts)) if starts else "…"
+    elif status == "done":
+        detail = f"✓ {done_n} done" if done_n > 1 else f"✓ {_ago(e.get('finished_at')) or 'done'}"
+    elif logo:
+        detail = stage
+    else:   # agents page: always say so, rather than leave a bare title
+        idle = _ago(e.get("since")).removesuffix(" ago")
+        detail = f"idle {idle}" if idle else "idle"
+
+    if timer:   # the strips only on an active card
+        now = {"alert": "a", "slow": "s"}.get(status, "r")
+        si, stot = t.get("stage_index"), t.get("stage_total")
+        if si and stot:
+            stages = tuple("d" if i < si else now if i == si else "" for i in range(1, stot + 1))
+        td, tt = t.get("tasks_done"), t.get("tasks_total")
+        if tt and td is not None and td < tt:
+            tasks = tuple("d" if i < td else "r" if i == td else "" for i in range(tt))
+    return (title, status, _short_label(detail), timer, issue, stages, tasks, more,
+            name_color(color_of or title, (241, 244, 247)), logo)
+
+
+def render_space(deck, card, attached, pulse):
+    name, status, detail, timer, issue, stages, tasks, more, ncol, logo = card
+    col = COLORS[status]
+    w, h = deck.key_image_format()["size"]
+    tint = COLORS["idle"] if status == "idle" else col
+    img, d, w, h = _canvas(deck, _gradient(w, h, tint, top=0.34 if status == "alert" else 0.24))
+    if timer:
+        _draw_card(d, w, h, name, ncol, status, detail, timer, issue, stages, tasks, more)
+    else:
+        _draw_quiet(img, d, w, h, name, ncol, status, detail, logo)
+    if status == "alert":
+        a = COLORS["alert"]
+        _border(d, w, h, a if pulse else tuple(int(c * 0.55) for c in a), width=3)
+    if attached:
+        _border(d, w, h, COLORS["attach"], width=2, inset=1)
+    return _done(deck, img)
+
+
+def _draw_card(d, w, h, name, ncol, status, detail, timer, issue, stages, tasks, more):
+    """An active space: name (and ×N when several agents are busy), what its most
+    urgent agent wants or does, a ticking timer with the ticket number, then the
+    stage strip and, while implementing, the task strip."""
+    col, pad, bright = COLORS[status], 6, (241, 244, 247)
+    badge = f"×{more}" if more > 1 else ""
+    bw = d.textlength(badge, font=font(10)) + 3 if badge else 0
+    f = _sized(d, name, (13, 12, 11, 10), w - 2 * pad - bw)
+    d.text((pad, pad - 1), _fit(d, name, f, w - 2 * pad - bw), font=f, fill=ncol, anchor="la")
+    if badge:
+        d.text((w - pad, pad), badge, font=font(10), fill=COLORS["textdim"], anchor="ra")
+
+    dcol = (200, 206, 214) if status == "busy" else col
+    d.text((pad, 21), _fit(d, detail, font(9), w - 2 * pad), font=font(9), fill=dcol, anchor="la")
+
+    strips = [s for s in (tasks, stages) if s]
+    bottom = h - pad - (len(strips) * 6 + max(0, len(strips) - 1) * 3)
+    tf = font(17) if len(timer) <= 5 else font(14)
+    d.text((pad, bottom - 3), timer, font=tf, fill=bright if status == "busy" else col, anchor="lb")
+    if issue and d.textlength(timer, font=tf) + d.textlength(issue, font=font(9)) + 4 <= w - 2 * pad:
+        d.text((w - pad, bottom - 4), issue, font=font(9), fill=COLORS["textdim"], anchor="rb")
+    y = bottom + 2
+    for s in strips:
+        _strip(d, pad, y, w - 2 * pad, 5, s)
+        y += 8
+
+
+def _draw_quiet(img, d, w, h, name, ncol, status, label, logos=True):
+    """A finished or idle key: its logo (or name) and a band with the label — under
+    the logo on the main page; on top on the agents page (logos=False), where it's
+    the first thing to read."""
+    band = 18 if label else 0
+    top = 0 if logos else band              # where the name area starts
+    logo = load_logo((w, h - band), SPACE_LOGOS[name.lower()]) if logos and name.lower() in SPACE_LOGOS else None
+    if logo:
+        img.paste(logo, ((w - logo.width) // 2, (h - band - logo.height) // 2), logo)
+    else:
+        _draw_wrapped(d, name, (w, h - band), ncol, 15, minsize=9, y0=top)
+    if label:
+        by = h - band if logos else 0       # band's top edge
+        d.rectangle([0, by, w, by + band], fill=tuple(int(c * 0.45) for c in COLORS[status]))
+        f = _sized(d, label, (11, 10, 9), w - 6)
+        fill = COLORS["done"] if status == "done" else COLORS["text"]
+        d.text((w / 2, by + band / 2), _fit(d, label, f, w - 6), font=f, fill=fill, anchor="mm")
+
+
+def render_action(deck, glyph, label, color=None, border=None):
+    img, d, w, h = _canvas(deck, COLORS["action"])
+    d.text((w / 2, h * 0.40), glyph, font=font(30), fill=color or COLORS["text"], anchor="mm")
+    d.text((w / 2, h * 0.82), label, font=font(12), fill=COLORS["textdim"], anchor="mm")
+    _border(d, w, h, border, width=3)
+    return _done(deck, img)
+
+
+def render_blank(deck):
+    return _done(deck, _canvas(deck, COLORS["empty"])[0])
+
+
+def render_launcher(deck, label, logo_file, glyph, accent, border, label_color=None):
+    """A WORK / VPS key: its logo (or the glyph in the theme accent) above the label,
+    bordered by its space's state."""
+    img, d, w, h = _canvas(deck, COLORS["action"])
+    logo = load_logo((w, h), logo_file) if logo_file else None
+    if logo:
+        img.paste(logo, ((w - logo.width) // 2, int(h * 0.42 - logo.height / 2)), logo)
+    else:
+        d.text((w / 2, h * 0.40), glyph or G_SERVER, font=font(30), fill=accent, anchor="mm")
+    d.text((w / 2, h * 0.86), label, font=_sized(d, label, (12, 11, 10), w - 8),
+           fill=label_color or COLORS["textdim"], anchor="mm")
+    _border(d, w, h, border)
+    return _done(deck, img)
+
+
+def render_theme(deck, name, active):
+    """A theme key in the theme's own colours: its bg0, and the icon and name in its
+    accent; an accent border on the active one."""
+    pal = theme_palette(name)
+    accent = _hex(pal.get("accent", "88c0d0"))
+    img, d, w, h = _canvas(deck, _hex(pal.get("bg0", "1b1f27")))
+    d.text((w / 2, h * 0.36), G_EYEDROP, font=font(28), fill=accent, anchor="mm")
+    parts = name.split("-")   # "vscode-dark" reads as two tidy lines
+    lines = (parts if len(parts) <= 2 else [parts[0], "-".join(parts[1:])])[:2]
+    y = h * 0.74 - len(lines) * 15 / 2 + 7.5
+    for ln in lines:
+        d.text((w / 2, y), ln, font=font(13), fill=accent, anchor="mm")
+        y += 15
+    if active:
+        _border(d, w, h, accent)
+    return _done(deck, img)
+
+
+def space_border(space):
+    """WORK / VPS border: the shown space, else its agents' state, else open-but-quiet."""
+    if not space:
+        return None
+    if space["active"]:
+        return COLORS["attach"]
+    return COLORS[space["status"]] if space["status"] in ACTIVE else COLORS["live"]
+
+
+# ── dashboard ────────────────────────────────────────────────────────────────
 class Dashboard:
+    """Each refresh asks the current page for its keys — {key: (signature, render)} —
+    and its presses — {key: fn}. Keys a page leaves out are blanked, and a key is only
+    redrawn when its signature changed."""
+
     def __init__(self, deck):
         self.deck = deck
-        self.lock = threading.Lock()
-        self.cache = {}           # key -> signature of last render
-        self.session_at = {}      # key -> session name (for press handling)
-        self.board_at = {}        # key -> board key of the session's most urgent Claude
-        self.design_key = None    # board key owning the newest design (DESIGN key)
-        self.theme_at = {}        # key -> theme name (theme-picker page)
-        self.work_at = {}         # key -> project session name (work page)
-        self.vps_at = {}          # key -> ssh alias (vps page)
-        self.view = "main"        # "main" | "media" | "themes" | "work" | "vps"
+        self.lock = threading.RLock()
+        self.cache = {}       # key -> signature of what's on it
+        self.press = {}       # key -> fn, for the page on screen
+        self.view = "main"
 
-    def set_key(self, key, signature, render):
-        if self.cache.get(key) == signature:
-            return
-        with self.lock:
-            self.deck.set_key_image(key, render())
-        self.cache[key] = signature
-
-    def _action(self, key, glyph, label, active):
-        self.set_key(key, ("a", glyph, active),
-                     lambda g=glyph, l=label, a=active:
-                         render_action(self.deck, g, l, a))
-
-    def _blank(self, key):
-        self.set_key(key, ("blank",), lambda: render_blank(self.deck))
+    def goto(self, view):
+        return lambda: setattr(self, "view", view)
 
     def refresh(self):
-        # Each view draws all 15 keys (unused ones blanked) so the cache diffs
-        # cleanly when switching pages — no stale key art lingers.
-        {"media": self._refresh_media,
-         "themes": self._refresh_themes,
-         "work": self._refresh_work,
-         "vps": self._refresh_vps}.get(self.view, self._refresh_main)()
+        with self.lock:
+            keys, press = {}, {}
 
-    def _refresh_main(self):
-        sessions = list_sessions()
-        entries = board_entries()
-        states = session_states(entries)
-        attached = attached_session()
+            def put(key, render, *args, on=None):
+                keys[key] = ((render.__name__, *args), partial(render, self.deck, *args))
+                if on:
+                    press[key] = on
 
-        # Alphabetical, so a key keeps its position and stays muscle memory. But the
-        # whole point of this row is that a glance tells you which agent needs you, so
-        # when there are more sessions than slots the alerting ones are guaranteed a
-        # place rather than falling off the end of the alphabet.
-        if len(sessions) > len(SESSION_SLOTS):
-            alerting = [n for n in sessions if states.get(n, ("idle", "", None))[0] == "alert"]
-            rest = [n for n in sessions if n not in alerting]
-            keep = set(alerting[:len(SESSION_SLOTS)])
-            for n in rest:
-                if len(keep) >= len(SESSION_SLOTS):
-                    break
-                keep.add(n)
-            sessions = [n for n in sessions if n in keep]
-
-        self.session_at = {}
-        self.board_at = {}
-        for i, key in enumerate(SESSION_SLOTS):
-            name = sessions[i] if i < len(sessions) else None
-            self.session_at[key] = name
-            status, label, bkey, entry = states.get(name, ("idle", "", None, None)) if name else ("empty", "", None, None)
-            self.board_at[key] = bkey
-            is_attached = bool(name) and name == attached
-            if entry is not None:
-                # Claude session: the mockup card. The card data is the signature, so a
-                # ticking timer re-draws once a second and nothing else re-draws at all.
-                card = _board_card(entry, status)
-                pulse = status == "alert" and int(time.time()) % 2 == 0
-                self.set_key(key, ("sb", card, status, is_attached, pulse),
-                             lambda c=card, s=status, a=is_attached, p=pulse:
-                                 render_session_board(self.deck, c, s, a, p))
-                continue
-            self.set_key(key, ("s", name, status, label, is_attached),
-                         lambda n=name, s=status, l=label, a=is_attached:
-                             render_session(self.deck, n, s, a, l))
-        self._action(MEDIA_KEY, MEDIA_GLYPH, "MEDIA", False)
-        self._action(WORK_KEY, WORK_GLYPH, "WORK", False)
-        self._action(VPS_KEY, VPS_GLYPH, "VPS", False)
-        self.design_key, design = newest_design(entries)
-        has = design is not None
-        self.set_key(DESIGN_KEY, ("d", has), lambda h=has: render_design(self.deck, h))
-        used = set(SESSION_SLOTS) | {MEDIA_KEY, WORK_KEY, VPS_KEY, DESIGN_KEY} | set(ACTIONS)
-        for key in range(self.deck.key_count()):
-            if key not in used:
-                self._blank(key)
-        for key, (glyph, label, is_active, _) in ACTIONS.items():
-            active = bool(is_active and is_active())
-            g = ACTIVE_GLYPH.get(key, glyph) if active else glyph
-            self._action(key, g, label, active)
-
-    def _refresh_media(self):
-        self.session_at = {}      # no sessions on this page
-        playing = player_playing()
-        for key, (glyph, label, is_active, _) in MEDIA_ACTIONS.items():
-            active = bool(is_active and is_active())
-            g = MEDIA_ACTIVE_GLYPH.get(key, glyph) if active else glyph
-            if key == 2 and playing:          # play/pause reflects transport state
-                g, label = MEDIA_PLAYING
-            self._action(key, g, label, active)
-        for key in range(self.deck.key_count()):
-            if key not in MEDIA_ACTIONS:
-                self._blank(key)
-
-    def _refresh_themes(self):
-        self.session_at = {}
-        self.theme_at = {}
-        names = theme_names()
-        active = active_theme()
-        for i, key in enumerate(THEME_SLOTS):
-            name = names[i] if i < len(names) else None
-            self.theme_at[key] = name
-            if name:
-                is_active = name == active
-                self.set_key(key, ("t", name, is_active),
-                             lambda n=name, a=is_active: render_theme(self.deck, n, a))
-            else:
-                self._blank(key)
-        self._action(THEME_BACK_KEY, MEDIA_ACTIONS[10][0], "BACK", False)
-        used = set(THEME_SLOTS) | {THEME_BACK_KEY}
-        for key in range(self.deck.key_count()):
-            if key not in used:
-                self._blank(key)
-
-    def _refresh_work(self):
-        self.session_at = {}
-        self.work_at = {}
-        live = set(list_sessions())
-        states = session_states()
-        attached = attached_session()
-        accent = current_accent()
-        for i, key in enumerate(WORK_SLOTS):
-            proj = WORK_PROJECTS[i] if i < len(WORK_PROJECTS) else None
-            if not proj:
-                self.work_at[key] = None
-                self._blank(key)
-                continue
-            name, label, logo_file, glyph = proj
-            self.work_at[key] = name
-            is_live = name in live
-            status = states.get(name, ("idle", "", None))[0] if is_live else "idle"
-            is_attached = name == attached
-            self.set_key(key, ("w", label, logo_file, glyph, accent, is_live, status, is_attached),
-                         lambda l=label, lf=logo_file, g=glyph, a=accent, lv=is_live, s=status, at=is_attached:
-                             render_work(self.deck, l, lf, g, a, lv, s, at))
-        self._action(WORK_BACK_KEY, MEDIA_ACTIONS[10][0], "BACK", False)
-        used = set(WORK_SLOTS) | {WORK_BACK_KEY}
-        for key in range(self.deck.key_count()):
-            if key not in used:
-                self._blank(key)
-
-    def _refresh_vps(self):
-        self.session_at = {}
-        self.vps_at = {}
-        accent = current_accent()
-        for i, key in enumerate(VPS_SLOTS):
-            host = VPS_HOSTS[i] if i < len(VPS_HOSTS) else None
-            if not host:
-                self.vps_at[key] = None
-                self._blank(key)
-                continue
-            alias, label, logo_file, glyph = host
-            self.vps_at[key] = alias
-            # reuse the work-key renderer with no live state (VPS hosts aren't tmux
-            # sessions) — just the host's logo (or the glyph in the theme accent) + label.
-            self.set_key(key, ("v", label, logo_file, glyph, accent),
-                         lambda l=label, lf=logo_file, g=glyph, a=accent:
-                             render_work(self.deck, l, lf, g, a, False, "idle", False))
-        self._action(VPS_BACK_KEY, MEDIA_ACTIONS[10][0], "BACK", False)
-        used = set(VPS_SLOTS) | {VPS_BACK_KEY}
-        for key in range(self.deck.key_count()):
-            if key not in used:
-                self._blank(key)
+            getattr(self, f"page_{self.view}")(put)
+            if self.view != "main":
+                put(BACK_KEY, render_action, G_BACK, "BACK", on=self.goto("main"))
+            self.press = press
+            for key in range(self.deck.key_count()):
+                sig, render = keys.get(key) or (("blank",), partial(render_blank, self.deck))
+                if self.cache.get(key) != sig:
+                    self.deck.set_key_image(key, render())
+                    self.cache[key] = sig
 
     def on_press(self, deck, key, pressed):
         if not pressed:
             return
-        {"media": self._press_media,
-         "themes": self._press_themes,
-         "work": self._press_work,
-         "vps": self._press_vps}.get(self.view, self._press_main)(key)
-        # reflect the result quickly instead of waiting for the next poll
-        self.refresh()
+        try:
+            fn = self.press.get(key)
+            if fn:
+                fn()
+            self.refresh()    # show the result now rather than on the next poll
+        except Exception:
+            log("press error:\n" + traceback.format_exc())
 
-    def _press_main(self, key):
-        if key == MEDIA_KEY:
-            self.view = "media"
-        elif key == WORK_KEY:
-            self.view = "work"
-        elif key == VPS_KEY:
-            self.view = "vps"
-        elif key == THEME_KEY:
-            self.view = "themes"
-        elif key == DESIGN_KEY:
-            if self.design_key:
-                sh("board", "design", self.design_key)
-        elif key in ACTIONS:
-            ACTIONS[key][3]()
+    # ── pages ──
+    def page_main(self, put):
+        spaces, _window, entries = load_state()
+        pulse = int(time.time()) % 2 == 0
+        for key, s in zip(SPACE_SLOTS, pick(spaces, len(SPACE_SLOTS))):
+            put(key, render_space, space_card(s), s["active"], pulse and s["status"] == "alert",
+                on=partial(open_space, s))
+        put(MEDIA_KEY, render_action, G_MUSIC, "MEDIA", on=self.goto("media"))
+        put(WORK_KEY, render_action, G_BRIEFCASE, "WORK", on=self.goto("work"))
+        put(AGENTS_KEY, render_action, G_ROBOT, "AGENTS", on=self.goto("agents"))
+        put(VPS_KEY, render_action, G_CLOUD, "VPS", on=self.goto("vps"))
+        design = newest_design(entries)
+        if design:
+            put(DESIGN_KEY, render_action, G_BRUSH, "DESIGN", COLORS["accent"], COLORS["accent"],
+                on=lambda: sh("board", "design", design))
         else:
-            name = self.session_at.get(key)
-            bkey = self.board_at.get(key)
-            if bkey:
-                sh("board", "jump", bkey)
-            elif name:
-                switch_to(name)
+            put(DESIGN_KEY, render_action, G_BRUSH, "DESIGN", COLORS["textdim"])
+        put(PICK_KEY, render_action, G_SEARCH, "PICK", on=open_picker)
+        put(THEME_KEY, render_action, G_EYEDROP, "THEME", on=self.goto("themes"))
+        self._mute_key(put, MIC_KEY, MIC, G_MIC, G_MIC_OFF, "MIC")
+        self._mute_key(put, MUTE_KEY, SINK, G_VOL, G_VOL_OFF, "MUTE")
 
-    def _press_media(self, key):
-        if key not in MEDIA_ACTIONS:  # blank key — ignore
-            return
-        handler = MEDIA_ACTIONS[key][3]
-        if handler is None:           # BACK -> return to main page
-            self.view = "main"
-        else:
-            handler()
+    def _mute_key(self, put, key, target, glyph, glyph_off, label):
+        m = muted(target)
+        put(key, render_action, glyph_off if m else glyph, label, COLORS["on"] if m else None,
+            on=partial(toggle_mute, target))
 
-    def _press_themes(self, key):
-        if key == THEME_BACK_KEY:
-            self.view = "main"
-        else:
-            name = self.theme_at.get(key)
-            if name:                  # apply the theme; stay so you can audition
-                sh("theme-switch", name)
+    def page_agents(self, put):
+        """Every agent as a card, in herdr's order (space, then tab) so each keeps its
+        key while you work; a press shows it and the page stays."""
+        agents = sorted((a for s in load_state()[0] for a in s["agents"] if a["terminal"]),
+                        key=lambda a: a["seq"])
+        pulse = int(time.time()) % 2 == 0
+        for key, a in zip(AGENT_SLOTS, pick(agents, len(AGENT_SLOTS))):
+            put(key, render_space, agent_card(a), a["shown"], pulse and a["status"] == "alert",
+                on=partial(open_agent, a))
 
-    def _press_work(self, key):
-        if key == WORK_BACK_KEY:
-            self.view = "main"
-            return
-        name = self.work_at.get(key)
-        if name:                      # launch/attach the project, then drop to main
-            open_work(name)
-            self.view = "main"
+    def page_media(self, put):
+        playing = player_playing()
+        put(1, render_action, G_PREV, "PREV", on=lambda: sh("playerctl", "previous"))
+        put(2, render_action, *((G_PAUSE, "PAUSE") if playing else (G_PLAY, "PLAY")),
+            on=lambda: sh("playerctl", "play-pause"))
+        put(3, render_action, G_NEXT, "NEXT", on=lambda: sh("playerctl", "next"))
+        self._mute_key(put, 6, SINK, G_VOL, G_VOL_OFF, "MUTE")
+        put(7, render_action, G_VOL_DOWN, "VOL-", on=partial(volume, "5%-"))
+        put(8, render_action, G_VOL, "VOL+", on=partial(volume, "5%+"))
 
-    def _press_vps(self, key):
-        if key == VPS_BACK_KEY:
+    def page_themes(self, put):
+        active = active_theme()
+        for key, name in zip(PAGE_SLOTS, theme_names()):
+            put(key, render_theme, name, name == active, on=partial(sh, "theme-switch", name))
+
+    def page_work(self, put):
+        spaces = {s["name"].lower(): s for s in load_state()[0]}
+        for key, (name, label, logo, glyph) in zip(PAGE_SLOTS, WORK_PROJECTS):
+            put(key, render_launcher, label, logo, glyph, COLORS["accent"],
+                space_border(spaces.get(name.lower())), name_color(name, COLORS["textdim"]),
+                on=self._then_main(open_project, name))
+
+    def page_vps(self, put):
+        spaces = {}
+        for s in load_state()[0]:
+            if s["machine"]:
+                spaces.setdefault(s["machine"], s)
+        for key, (machine, label, logo, glyph) in zip(VPS_SLOTS, VPS_HOSTS):
+            put(key, render_launcher, label, logo, glyph, COLORS["accent"],
+                space_border(spaces.get(machine)), name_color(machine, COLORS["textdim"]),
+                on=self._then_main(open_machine, machine, label))
+
+    def _then_main(self, fn, *args):
+        def go():
+            fn(*args)
             self.view = "main"
-            return
-        alias = self.vps_at.get(key)
-        if alias:                     # open a new ghostty ssh session, then drop to main
-            open_vps(alias)
-            self.view = "main"
+        return go
 
 
-def wait_for_deck(stop=None):
+# ── deck lifecycle ───────────────────────────────────────────────────────────
+def wait_for_deck(stop):
     """Block until a deck is enumerated (or `stop` is set — then return None)."""
-    while stop is None or not stop.is_set():
+    while not stop.is_set():
         try:
             decks = DeviceManager().enumerate()
         except Exception:
             decks = []
         if decks:
             return decks[0]
-        stop.wait(2) if stop is not None else time.sleep(2)
+        stop.wait(2)
     return None
 
 
 def open_deck(deck):
     deck.open()
     deck.reset()
-    deck.set_brightness(70)
+    deck.set_brightness(BRIGHTNESS)
     log(f"connected: {deck.deck_type()} ({deck.key_count()} keys)")
 
 
@@ -1096,17 +976,16 @@ def deck_connected(deck):
 
 
 def reconnect(dash, old, stop):
-    """The deck stopped accepting writes (re-enumerated, unplugged, resumed, or a
-    wedged handle). Drop the stale handle and re-open a fresh one so the daemon
-    self-heals instead of spinning forever. Retries until it gets a handle it can
-    actually open (a wedged deck may still enumerate), or `stop` is set."""
+    """The deck stopped accepting writes (unplugged, resumed, re-enumerated, or a
+    wedged handle that still enumerates). Drop the handle and open a fresh one,
+    retrying until one opens or `stop` is set."""
     try:
         old.close()
     except Exception:
         pass
     while not stop.is_set():
         deck = wait_for_deck(stop)
-        if deck is None:                 # stopping — no new deck to bind
+        if deck is None:
             return None
         try:
             open_deck(deck)
@@ -1120,21 +999,18 @@ def reconnect(dash, old, stop):
             continue
         with dash.lock:
             dash.deck = deck
-            dash.cache.clear()           # force a full redraw onto the fresh handle
+            dash.cache.clear()           # full redraw onto the fresh handle
         deck.set_key_callback(dash.on_press)
         return deck
     return None
 
 
 def main():
-    load_theme()
-
     stop = threading.Event()
-    def shutdown(*_):
-        stop.set()
-    signal.signal(signal.SIGTERM, shutdown)
-    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
 
+    load_theme()
     deck = wait_for_deck(stop)
     if deck is None:
         return
@@ -1142,28 +1018,25 @@ def main():
     dash = Dashboard(deck)
     deck.set_key_callback(dash.on_press)
 
-    # A dead/wedged USB handle surfaces as a write failure in refresh(). `connected()`
-    # only checks whether the same USB path still enumerates, so a wedged handle (or a
-    # drop-and-return on the same path) still reports connected — hence we also force a
-    # reconnect after a few consecutive failures, not just when connected() goes false.
-    RECONNECT_AFTER = 3   # consecutive failed polls before forcing a reopen
-    fail_streak = 0
+    # A wedged handle can still report connected(), so a few failed polls in a row
+    # force a reopen too, not only connected() going false.
+    RECONNECT_AFTER = 3
+    fails = 0
     try:
         while not stop.is_set():
             try:
-                load_theme()      # pick up theme-switch changes live
+                load_theme()
                 dash.refresh()
-                fail_streak = 0
+                fails = 0
             except Exception:
-                fail_streak += 1
+                fails += 1
                 gone = not deck_connected(deck)
-                if gone or fail_streak >= RECONNECT_AFTER:
-                    why = "disconnected" if gone else f"{fail_streak} write failures"
-                    log(f"deck unresponsive ({why}) — reconnecting")
+                if gone or fails >= RECONNECT_AFTER:
+                    log(f"deck unresponsive ({'disconnected' if gone else f'{fails} failures'}) — reconnecting")
                     deck = reconnect(dash, deck, stop)
                     if deck is None:
                         break
-                    fail_streak = 0
+                    fails = 0
                 else:
                     log("refresh error:\n" + traceback.format_exc())
             stop.wait(POLL)
