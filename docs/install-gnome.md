@@ -14,7 +14,7 @@ cd ~/projects/personal/dotfiles
 Stow the universal packages **only** — do **not** stow `hypr waybar mako wofi`:
 
 ```bash
-stow bin gh-dash ghostty git fish herd lazygit nvim sesh starship tmux
+stow bin claude gh-dash ghostty git fish herd lazygit nvim sesh starship tmux
 ```
 
 > On a fresh Ubuntu box `~/.config/fish` may already exist as a real dir — back it up and
