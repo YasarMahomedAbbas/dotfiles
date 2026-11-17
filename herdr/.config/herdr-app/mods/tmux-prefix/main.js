@@ -43,6 +43,8 @@ const BINDINGS = {
   j: ["pane down", () => run("pane.go", { direction: "down" })],
   k: ["pane up", () => run("pane.go", { direction: "up" })],
   l: ["pane right", () => run("pane.go", { direction: "right" })],
+  n: ["next window", () => run("tab.next", {})],
+  N: ["previous window", () => run("tab.prev", {})],
   x: ["close pane", () => run("pane.close", {})],
   t: ["tickets panel", () => togglePanel("tickets", "Tickets")],
   d: ["todos panel", () => togglePanel("todos", "Todos")], // only where todos() holds
@@ -100,6 +102,7 @@ export default class TmuxPrefix extends View {
         .child(chip("H", "split ─"))
         .child(chip("hjkl", "move"))
         .child(chip("1-9", "window"))
+        .child(chip("n/N", "next/prev"))
         .child(chip("x", "close pane"))
         .child(chip("s", "sessions"))
         .child(chip("t", "tickets"))
