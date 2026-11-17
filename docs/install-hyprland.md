@@ -16,7 +16,7 @@ cd ~/projects/personal/dotfiles
 Stow **everything** on this machine (universal + Hyprland-only):
 
 ```bash
-stow bin gh-dash ghostty git fish herd lazygit nvim sesh starship tmux   # universal
+stow bin claude gh-dash ghostty git fish herd lazygit nvim sesh starship tmux   # universal
 stow hypr waybar mako wofi streamdeck                               # Hyprland desktop
 ```
 
