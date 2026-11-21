@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# stay-awake — keep this PC from suspending, e.g. while using it from the phone.
+#
+#   stay-awake on | off | toggle | status      (no argument = status)
+#
+# "on" starts a transient user unit (stay-awake.service) that holds a systemd
+# sleep inhibitor. hypridle's 30-min `systemctl suspend` is then refused, but the
+# 5-min lock and 10-min screen-off still happen. "off" stops the unit. Nothing is
+# persisted: a reboot or logout from the user manager turns it off.
+# The Stream Deck's AWAKE key (main page, key 12) calls this.
+set -euo pipefail
+
+UNIT=stay-awake.service
+
+is_on() { systemctl --user is-active --quiet "$UNIT"; }
+
+on() {
+  is_on && return 0
+  systemd-run --user --quiet --collect --unit="$UNIT" \
+    --description="Keep the PC awake (stay-awake)" \
+    systemd-inhibit --what=sleep --who=stay-awake \
+      --why="stay-awake is on" --mode=block sleep infinity
+}
+
+off() { is_on && systemctl --user stop "$UNIT" || true; }
+
+case "${1:-status}" in
+  on) on; echo on ;;
+  off) off; echo off ;;
+  toggle) if is_on; then off; echo off; else on; echo on; fi ;;
+  status) if is_on; then echo on; else echo off; fi ;;
+  *) echo "usage: stay-awake [on|off|toggle|status]" >&2; exit 2 ;;
+esac
