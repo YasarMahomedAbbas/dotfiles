@@ -13,6 +13,7 @@ import {
   parseDesignLines,
   parseTaskNotifications,
   prettyModel,
+  summariseAnswer,
   summariseInput,
   artifactId,
 } from './pure.ts'
@@ -82,6 +83,8 @@ const id = {
   pid: null as number | null,
   tmux: null as { session: string; pane: string; window: string } | null,
   tmuxId: null as string | null,
+  /** herdr's terminal id ($HC_TERMINAL_ID), null outside herdr. */
+  herdr: null as string | null,
   cwd: '',
   branch: null as string | null,
   model: null as string | null,
@@ -100,6 +103,8 @@ const S = {
   shells: [] as Shell[],
   tasks: [] as Task[],
   designs: [] as Design[],
+  /** The start of the main loop's last answer, for "what was this about". */
+  reply: null as string | null,
 }
 
 let started = false
@@ -125,6 +130,7 @@ const resetSession = (): void => {
   S.shells = []
   S.tasks = []
   S.designs = []
+  S.reply = null
 }
 
 // ---------------------------------------------------------------- helpers
@@ -191,6 +197,7 @@ const snapshot = (heartbeat: number): string => {
     pid: id.pid,
     heartbeat,
     tmux: id.tmux,
+    herdr: id.herdr ? { terminal: id.herdr } : null,
     cwd: id.cwd,
     branch: id.branch,
     model: id.model,
@@ -218,6 +225,7 @@ const snapshot = (heartbeat: number): string => {
   doc.shells = S.shells.map(s => ({ id: s.id, command: s.command, status: s.status, started: s.started, ended: s.ended }))
   doc.tasks = S.tasks.map(t => ({ subject: t.subject, status: t.status }))
   doc.designs = S.designs
+  doc.reply = S.reply
   return `${JSON.stringify(doc, null, 2)}\n`
 }
 
@@ -499,6 +507,7 @@ const restore = async ($: $): Promise<void> => {
     S.tasks = arr<Task>(prev.tasks)
     S.designs = arr<Design>(prev.designs)
     S.finished_at = typeof prev.finished_at === 'number' ? prev.finished_at : null
+    S.reply = typeof prev.reply === 'string' ? prev.reply : null
     if (prev.state === 'working' || prev.state === 'needs_you') S.inTurn = true
     if (prev.state === 'needs_you' && prev.attention && typeof prev.attention === 'object') {
       S.attention = prev.attention as Attention
@@ -518,13 +527,15 @@ const start = async ($: $, cwd: string): Promise<void> => {
     resetSession()
     tmuxState = null
   }
-  const [pane, home, sessionId, model] = await Promise.all([
+  const [pane, herdr, home, sessionId, model] = await Promise.all([
     $.env.get('TMUX_PANE').catch(() => undefined),
+    $.env.get('HC_TERMINAL_ID').catch(() => undefined),
     $.env.get('HOME').catch(() => undefined),
     $.session.id().catch(() => ''),
     $.session.model().catch(() => ''),
   ])
   id.pane = pane || null
+  id.herdr = herdr || null
   id.sessionId = sessionId
   id.dir = `${home || '/tmp'}/.cache/claude-board`
   id.key = id.pane ? id.pane.replace(/^%/, '') : `nopane-${sessionId}`
@@ -784,6 +795,7 @@ export const register: Register = on => {
         S.inTurn = false
         S.attention = null
         S.calls.clear()
+        if (!e.isAborted && e.answer?.trim()) S.reply = summariseAnswer(e.answer)
       }
       scanText(e.answer ?? '', t)
       void touch($)

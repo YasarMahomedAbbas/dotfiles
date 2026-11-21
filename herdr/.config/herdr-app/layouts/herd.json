@@ -154,6 +154,13 @@
                       "content": {
                         "mod": "todos"
                       }
+                    },
+                    {
+                      "id": "space-panel",
+                      "type": "block",
+                      "content": {
+                        "mod": "space-panel"
+                      }
                     }
                   ],
                   "active": "files"

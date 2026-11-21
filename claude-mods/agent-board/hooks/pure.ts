@@ -11,6 +11,23 @@ export const firstLine = (s: string): string => {
 }
 
 /**
+ * An answer as one plain line for the board: its first paragraph (past a lone heading) without markdown
+ * (headings, bullets, emphasis, code ticks, link targets), whitespace collapsed, ≤240 chars.
+ */
+export const summariseAnswer = (answer: string): string => {
+  const paras = answer.trim().split(/\n\s*\n/).map(p => p.trim()).filter(p => p !== '' && !p.startsWith('```'))
+  // A heading on its own ("## Done") says little: take the paragraph after it.
+  const para = paras.find(p => !/^#{1,6}\s[^\n]*$/.test(p)) ?? paras[0] ?? ''
+  const plain = para
+    .replace(/^\s{0,3}(#{1,6}|[-*+]|\d+\.|>)\s+/gm, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|`)/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return clip(plain, 240)
+}
+
+/**
  * The key a Bash command's duration is recorded under: first line, leading
  * `cd <dir> &&` and `VAR=value` assignments stripped, then the first word plus
  * the second when it is not a flag or an operator (`pnpm test -- foo` → `pnpm test`).

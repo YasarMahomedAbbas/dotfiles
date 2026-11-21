@@ -143,6 +143,35 @@ describe('identity and file', () => {
     expect(w.board().heartbeat).toBe(before + 10_000)
   })
 
+  test('herdr: the terminal id from HC_TERMINAL_ID, null without it', async ($, on) => {
+    const w = world(on, {}, { HC_TERMINAL_ID: 't10x' })
+    await begin($, w)
+    expect(w.board().herdr).toEqual({ terminal: 't10x' })
+  })
+
+  test('herdr is null outside herdr', async ($, on) => {
+    const w = world(on)
+    await begin($, w)
+    expect(w.board().herdr).toBe(null)
+  })
+
+  test('reply: the main answer as one plain line, kept until the next answer', async ($, on) => {
+    const w = world(on)
+    await begin($, w)
+    expect(w.board().reply).toBe(null)
+    await turnStart($, w)
+    await turnEnd($, w, { answer: '## Done\n\nAdded **space** mod in `herdr/mods`, see [docs](https://x.y).\n\nMore detail.' })
+    expect(w.board().reply).toBe('Added space mod in herdr/mods, see docs.')
+    await turnStart($, w)
+    await turnEnd($, w, { answer: 'Added the **space** mod in `herdr/mods`, see [docs](https://x.y).\nSecond line.\n\nMore.' })
+    expect(w.board().reply).toBe('Added the space mod in herdr/mods, see docs. Second line.')
+    // a subagent's answer and an empty answer leave it alone
+    await turnEnd($, w, { agentId: 'a1', answer: 'found it' })
+    await turnStart($, w)
+    await turnEnd($, w, { answer: '' })
+    expect(w.board().reply).toBe('Added the space mod in herdr/mods, see docs. Second line.')
+  })
+
   test('session.end removes the file and the tmux option', async ($, on) => {
     const w = world(on)
     await begin($, w)

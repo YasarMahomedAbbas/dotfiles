@@ -5,7 +5,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, hc, props, closeOverlay, focused, theme, nextCommand, notify, openOverlay, spaces, panes, layout, shared } from "herdr";
+import { run, hc, props, closeOverlay, focused, theme, nextCommand, notify, openOverlay, spaces, panes, layout, shared, home } from "herdr";
 
 // tmux's `,` / `$`: herdr's own rename dialog (the shipped `prompt` mod), pre-filled.
 function rename(kind, f) {
@@ -20,7 +20,7 @@ function rename(kind, f) {
 
 // A view in the right-hand sidebar (where Files and Changes live): show it, or hide the
 // sidebar when it's already showing.
-function togglePanel(child, title) {
+function togglePanel(child, title, focus = false) {
   const find = (n, id) => (!n ? null : n.id === id ? n : (n.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null);
   const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
   if (!panel || !(body?.children ?? []).some((c) => c.id === child)) {
@@ -28,15 +28,29 @@ function togglePanel(child, title) {
     return;
   }
   if (!panel.hidden && body.active === child) run("layout.hide", { id: "panel" });
-  else { run("layout.select", { stack: "panel-body", child }); run("layout.show", { id: "panel" }); }
+  else {
+    run("layout.select", { stack: "panel-body", child });
+    run("layout.show", { id: "panel" });
+    // A focusable view takes the keyboard, so j/k and 1-9 work at once.
+    if (focus) run(`${child}.focus`);
+  }
+}
+
+// Where the space was opened (a project's root, or travelsmart's Frontend): new windows start
+// there, while splits stay in the pane's own folder (its worktree). A space made without a
+// folder: its first tab's folder, else home.
+function spaceRoot(f) {
+  const s = spaces().find((x) => x.id === f?.space);
+  return s?.folder || panes().find((p) => p.tab === s?.tabs[0]?.id && p.cwd)?.cwd || home();
 }
 
 // Todos only where the assistant is set up (my-tabs checks for pa and its token).
 const todos = () => shared("todos.available") === true;
 
-// Every binding here comes from ~/.tmux.conf, except t and d (my sidebar views).
+// Every binding here comes from ~/.tmux.conf, except t, d and a (my sidebar views) and C.
 const BINDINGS = {
-  c: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
+  c: ["new window (space root)", (f) => run("terminal.open", { place: "tab", folder: spaceRoot(f) })],
+  C: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   V: ["split side by side", (f) => run("terminal.open", { place: "right", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   H: ["split stacked", (f) => run("terminal.open", { place: "down", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   h: ["pane left", () => run("pane.go", { direction: "left" })],
@@ -48,6 +62,7 @@ const BINDINGS = {
   x: ["close pane", () => run("pane.close", {})],
   t: ["tickets panel", () => togglePanel("tickets", "Tickets")],
   d: ["todos panel", () => togglePanel("todos", "Todos")], // only where todos() holds
+  a: ["space panel", () => togglePanel("space-panel", "Space", true)],
   s: ["session picker", () => run("mod.open", { name: "sessions" })],
   ",": ["rename window", (f) => rename("tab", f)],
   "$": ["rename session", (f) => rename("space", f)],
@@ -98,6 +113,7 @@ export default class TmuxPrefix extends View {
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(h_flex().flex_wrap().gap_x(14).gap_y(6)
         .child(chip("c", "new"))
+        .child(chip("C", "new here"))
         .child(chip("V", "split │"))
         .child(chip("H", "split ─"))
         .child(chip("hjkl", "move"))
@@ -107,6 +123,7 @@ export default class TmuxPrefix extends View {
         .child(chip("s", "sessions"))
         .child(chip("t", "tickets"))
         .when(todos(), (e) => e.child(chip("d", "todos")))
+        .child(chip("a", "space"))
         .child(chip(",", "rename"))
         .child(chip("$", "rename session"))
         .child(chip("C-f", "send C-f")));
