@@ -17,6 +17,11 @@ for the agent board. The contract is section 1 of [`docs/agent-board.md`](../../
   `sh -c 'printf %s "$CLAUDE_CODE_BRIDGE_SESSION_ID"'`, once per heartbeat. A value not
   matching `^session_[A-Za-z0-9]{1,64}$` is `null`; a failed read keeps the last value for
   one more heartbeat, then `null`.
+- `herdr`: `{ terminal }` from `$HC_TERMINAL_ID` when Claude runs in a herdr terminal, else
+  `null`. herdr panes carry the same id, so this is how a herdr mod finds the tab a file
+  belongs to (the file key stays `nopane-<session_id>` there).
+- `reply`: the main loop's last non-empty answer as one plain line (first paragraph past
+  a lone heading, markdown stripped, ≤240 chars); subagent answers don't change it.
 - The tmux session option `@board_state` (`needs_you` / `working` / `background` / `idle`),
   set on each change through the session id (`$N`), unset when the session ends and set
   again when a new one starts in the same process.

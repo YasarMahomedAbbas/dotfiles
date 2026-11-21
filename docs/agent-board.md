@@ -30,6 +30,7 @@ A process with no file is invisible to every display. Readers treat a file whose
   "pid": 12345,                     // Claude process pid
   "heartbeat": 1791456780123,       // epoch ms
   "tmux": { "session": "issue-1654", "pane": "%42", "window": "1" },   // null outside tmux
+  "herdr": { "terminal": "t10x" },  // $HC_TERMINAL_ID (herdr terminal), null outside herdr; the key the herdr panel joins on
   "cwd": "/home/…/worktrees/issue-1654/Frontend",
   "branch": "fix/frontend/sign-in-autofill-submit",
   "model": "Opus 5.5 (1M context)",
@@ -79,7 +80,11 @@ A process with no file is invisible to every display. Readers treat a file whose
 
   // design canvases published from this session (Artifact publish with the Design type,
   // or a `DESIGN_CANVAS issue=<n> url=<url>` line in the transcript)
-  "designs": [ { "url": "https://claude.ai/artifact/…", "title": "…", "issue": 1430, "boards": 11, "at": 1791456780000 } ]
+  "designs": [ { "url": "https://claude.ai/artifact/…", "title": "…", "issue": 1430, "boards": 11, "at": 1791456780000 } ],
+
+  // the main loop's last non-empty answer as one plain line: first paragraph (past a lone
+  // heading), markdown stripped, ≤240 chars; null until the first answer
+  "reply": "Added the space mod in herdr/mods, see docs."
 }
 ```
 
