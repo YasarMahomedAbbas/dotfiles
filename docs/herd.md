@@ -131,7 +131,7 @@ steps before launch. No recipe = the task goes to the agent unchanged.
   `systemd-inhibit --what=idle:sleep` until it exits (hypridle's 30-min suspend froze an
   unattended run for 4 h on 2026-11-08). Any recipe can return `inhibit: "<why>"`.
 
-Later recipes, as needed: `review` (an hc template as a role), `swarm` (below).
+Later recipes, as needed: `review` (an hc template as a role). Swarm became commands (below).
 
 ## Pinned description bar
 
@@ -148,16 +148,46 @@ in `~/.config/herdr-app/layouts/herd.json` set the pane header to
 On tmux, `herd` sets the pane title to `name — desc` and stores the labels as `@herd_*` pane
 options; show it with `pane-border-status top`.
 
-## Room for swarm (not built)
+## Temp herds and swarm (built 2026-11-21)
 
-A swarm = one orchestrator herd that starts N worker herds as panes in its own tab, workers
-reporting to it. The design already allows it:
+A temp herd is a throwaway helper an agent starts beside itself: explore a codebase, research
+a topic on the web, a Codex image job. It opens as a pane in the caller's tab (the same tab, so
+the person can watch what an agent spun off), hands a result back and closes.
 
-- `--tab` / `--pane` targets let the orchestrator place workers beside itself
-- `--report` sends to the parent; `hc wait --children any` waits without polling
-- `--group` labels let it list, message and close its workers; the bar can say "worker 2/4"
+```
+herd temp  [start options] [--wait] [--timeout s] [--group g] -- "task"
+herd swarm [-n N | --angle "…" …] [start options] [--wait] -- "problem"
+herd wait  [--timeout s] <group|id>    # block until done, print each result (exit 124 on timeout)
+herd done  ["<result>" | --file f]     # inside a temp herd: hand back and end
+herd close --group <g>                 # end every live member
+```
 
-So swarm is a recipe, not a rewrite.
+- `temp` is `start --place right --result <file> --group <g> --label herd.temp=1`. `--result`
+  puts `HERD_RESULT` in the agent's environment and appends the hand-back instructions to the
+  task: write the result to the file, then `herd done`. herd truncates the file at launch.
+- `herd done` writes `<file>.done`, sets the stage to done and ends its own terminal 2 s later
+  (detached, so the agent's tool call returns first). A herdr pane closes when its program
+  exits; on tmux it's `kill-pane`.
+- Members of a group are recorded in `~/.cache/herd/temp/<group>/` (`N.json` how to find it,
+  `N.md` its result, `N.md.done` finished), so `wait` still knows them after their terminals
+  are gone. Groups older than 7 days are swept on the next `temp`.
+- Placement: the first member splits right of the caller; later members of the same group
+  split down from the last live one, so a group is one column beside the caller.
+- `wait` polls every 2 s (members have no hc parent, so `hc wait --children` can't see them).
+  A member is finished when its `.done` exists or its terminal is gone ("ended without herd
+  done"). A finished member still alive is ended by `wait`, in case its own close failed. A
+  herdr member whose status is `blocked` (a permission prompt) is reported once on stderr.
+- `swarm` starts N temps in one group, each given the shared problem plus its angle ("worker
+  i of N; your angle: …"), or an "independent attempt" line with `-n` alone. At most 8.
+- Nobody answers a helper's startup prompts, and its sandbox must let it write the result: a
+  runner's `temp_args` in `runners.json` are added for temp herds (`{dir}` = the result folder,
+  `{at}` = where it runs). Codex gets `-c 'projects={"{at}"={trust_level="trusted"}}'` (its
+  trust prompt otherwise waits forever, and `-c` can't take a quoted dotted key, hence the
+  inline table, for that run only), `--sandbox workspace-write` (an untrusted folder starts
+  read-only, which refuses `--add-dir` and exits) and `--add-dir {dir}`. Codex doesn't report
+  status to herdr, so `wait` can't flag a Codex helper stuck on a prompt; only the timeout ends it.
+- From Claude Code the caller runs `herd temp --wait` (or `herd wait`) as a background Bash
+  command: the exit notifies it, and the output is the result.
 
 ## The skill
 
@@ -190,7 +220,7 @@ So swarm is a recipe, not a rewrite.
 5. **Retire** the `ticket-window` hooks in `~/.claude/settings.json` (done 2026-11-07; they
    were no-ops outside tmux). `ticket-window` itself stays while lazyissues still calls it.
    `pipeline-status` forwards to `herd stage` and keeps its tmux options for the board.
-6. **Later:** swarm recipe.
+6. **Swarm:** built as `herd temp` / `herd swarm` (2026-11-21), commands rather than a recipe.
 
 Out of scope here: the ticket board (being rebuilt separately), personal-assistant's builder
 (issue #352), lazyissues/lazycontracts, the sesh family and other personal tmux tools.
@@ -205,6 +235,9 @@ Out of scope here: the ticket board (being rebuilt separately), personal-assista
   session's sub-agents and outlive it. Reporting goes through `HERD_PARENT` in the child's
   environment and `herd report`, which works on herdr and tmux alike.
 - `hc ls` leaves labels out; `herd ls` reads each live terminal with `hc get`.
+- A lone word with no `--` (`herd list`, `herd stauts`) is refused as an unknown command instead of
+  being started as a task: every guess at a subcommand used to open a stray agent tab. `list` is an
+  alias of `ls`. A real one-word task goes after `--`.
 - Extra labels: `--label k=v` (repeatable), visible in `herd ls --json` as `.labels`.
 - For programs that start herds without a recipe (personal-assistant's builder, #352):
   `--arg` (the runner's flags, in order, before the task; also for `task=send` runners),

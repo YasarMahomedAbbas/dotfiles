@@ -6,7 +6,11 @@
 #   herd stage <stage> [state]        from inside a herd: record where it is
 #   herd report "<message>"           from inside a herd: tell whoever started it
 #   herd go <key|name|id>             bring a herd on screen
-#   herd close <key|name|id>          end a herd
+#   herd close <key|name|id>          end a herd (--group g: all of them)
+#   herd temp [--wait] -- "the task"  a throwaway helper in a pane beside you; it hands back a result
+#   herd swarm [-n N] [--angle "…"]… [--wait] -- "the task"   N temp herds on one problem
+#   herd wait <group|id>              block until temp herds finish; print their results
+#   herd done ["<result>"]            from inside a temp herd: hand the result back, close the pane
 #
 # Plain bash + git + jq, so it runs on any Linux box. The multiplexer is a backend
 # (herdr, hc, tmux, here), picked per call from where herd was called.
@@ -25,7 +29,7 @@ conf() { [ -f "$CONF/config.json" ] && jq -r --arg k "$1" '.[$k] // empty' "$CON
 have jq || die "needs jq (apt install jq / pacman -S jq)"
 
 usage() {
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
   cat <<'EOF'
 
 Options for starting a herd:
@@ -44,6 +48,13 @@ Options for starting a herd:
   --report                          it reports back to whoever started it
   --backend herdr|hc|tmux|here      override detection
   --focus / --no-focus              show it now (default: tab/space yes, others no)
+  --result <file>                   it writes its result there and ends with `herd done` (temp uses it)
+
+Options for temp and swarm (plus any of the above):
+  --wait                            block until done and print the result(s)
+  --timeout <s>                     with --wait: give up after this long (default 1800)
+  --group <id>                      temp: join an existing temp group (its panes stack in one column)
+  -n <N> / --angle "…"              swarm: how many, or one worker per angle
 EOF
 }
 
@@ -196,9 +207,10 @@ remember_spaces() {
 # ---------------------------------------------------------------- start
 
 start() {
+  local dashdash=
   local opt_place="" opt_at="" opt_project="" opt_runner="" opt_name="" opt_desc="" opt_tab="" opt_pane=""
   local opt_group="" opt_recipe="" opt_report=0 opt_focus="" opt_labels="{}"
-  local opt_args="[]" opt_key="" opt_inhibit=""
+  local opt_args="[]" opt_key="" opt_inhibit="" opt_result=""
   opt_backend=""
   while [ $# -gt 0 ]; do
     case $1 in
@@ -218,17 +230,23 @@ start() {
       --inhibit) opt_inhibit=$2; shift 2 ;;
       --recipe) opt_recipe=$2; shift 2 ;;
       --report) opt_report=1; shift ;;
+      --result) opt_result=$2; shift 2 ;;
       --no-report) opt_report=0; shift ;;
       --backend) opt_backend=$2; shift 2 ;;
       --focus) opt_focus=1; shift ;;
       --no-focus) opt_focus=0; shift ;;
-      --) shift; break ;;
+      --) shift; dashdash=1; break ;;
       -h|--help) usage; exit 0 ;;
       -*) die "unknown option: $1" ;;
       *) break ;;
     esac
   done
   local task="$*"
+  # A lone word without -- is a mistyped subcommand (herd list, herd stauts), not a task:
+  # starting an agent on it opens a stray tab. A real one-word task goes after --.
+  if [ -z "${dashdash:-}" ] && [ $# -eq 1 ] && [[ $1 != *[[:space:]]* ]]; then
+    die "unknown command: $1 (commands: ls go close stage report temp swarm wait done; a task goes after --)"
+  fi
   local runner="${opt_runner:-$(conf runner)}"; runner="${runner:-claude}"
 
   # A recipe fills in whatever the flags left open.
@@ -288,6 +306,24 @@ start() {
 When you finish, or get stuck and need a decision, report back with:
   herd report \"<one-line result, or the path of a file with the details>\""
   fi
+  if [ -n "$opt_result" ]; then
+    mkdir -p "$(dirname "$opt_result")"; : > "$opt_result"
+    task="$task
+
+---
+You are a temporary herd: a helper another agent started in a pane beside it, and it is waiting
+for your result. Nobody is watching this pane, so don't ask questions; make reasonable calls and
+say which you made. Stay on this task only.
+When you're finished (or truly stuck), write your full result as markdown to:
+  $opt_result
+Findings, sources or file paths, and the absolute path of anything you produced. Then run
+  herd done
+which hands the result back and closes this pane. Do nothing after it."
+    # Nobody answers a helper's startup prompts and a sandbox must let it write its result, so a
+    # runner can add temp_args ({dir}: the result folder, {at}: where it runs). runners.json.
+    opt_args=$(jq -c --argjson x "$opt_args" --arg d "$(dirname "$opt_result")" --arg at "$at" --arg r "$runner" \
+      '(.[$r].temp_args // []) | map(gsub("\\{dir\\}"; $d) | gsub("\\{at\\}"; $at)) | $x + .' "$CONF/runners.json")
+  fi
 
   # The agent's command line: env carries herd's context into the child.
   local argv mode
@@ -295,6 +331,7 @@ When you finish, or get stuck and need a decision, report back with:
   local envs
   envs=$(jq -cn --arg p "$parent" --arg b "$backend" --arg k "$key" --arg n "$name" \
     '["env", "HERD_PARENT=\($p)", "HERD_BACKEND=\($b)", "HERD_KEY=\($k)", "HERD_NAME=\($n)"]')
+  [ -n "$opt_result" ] && envs=$(jq -c --arg r "$opt_result" '. + ["HERD_RESULT=\($r)"]' <<<"$envs")
   local full
   if [ "$mode" = arg ]; then
     full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --argjson x "$opt_args" --arg t "$task" '$e + $a + $x + [$t]')
@@ -312,10 +349,11 @@ When you finish, or get stuck and need a decision, report back with:
   # Labels every backend records.
   local labels
   labels=$(jq -cn --arg name "$name" --arg desc "$desc" --arg key "$key" --arg runner "$runner" \
-      --arg recipe "$opt_recipe" --arg group "$group" --arg parent "$parent" --arg project "$project" \
+      --arg recipe "$opt_recipe" --arg group "$group" --arg parent "$parent" --arg project "$project" --arg result "$opt_result" \
       --argjson extra "$(jq -c '.labels // {}' <<<"$r_json")" --argjson mine "$opt_labels" '
     {"herd.name": $name, "herd.desc": $desc, "herd.key": $key, "herd.runner": $runner,
-     "herd.recipe": $recipe, "herd.group": $group, "herd.parent": $parent, "herd.project": $project}
+     "herd.recipe": $recipe, "herd.group": $group, "herd.parent": $parent, "herd.project": $project,
+     "herd.result": $result}
     + $extra + $mine | with_entries(select(.value != ""))')
 
   # A new tab/space takes focus only when whoever started it is what the person is looking
@@ -521,6 +559,11 @@ go() {
 
 cmd_close() {
   local h id
+  if [ "${1:-}" = --group ]; then
+    [ -n "${2:-}" ] || die "usage: herd close --group <id>"
+    list_herds | jq -r --arg g "$2" 'select(.group == $g) | .id' | while read -r id; do cmd_close "$id"; done
+    return 0
+  fi
   h=$(find_herd "${1:-}"); [ -n "$h" ] || die "no herd: ${1:-}"
   id=$(jq -r '.id' <<<"$h")
   case $(jq -r '.backend' <<<"$h") in
@@ -530,13 +573,214 @@ cmd_close() {
   printf '%s\n' "$h"
 }
 
+# ---------------------------------------------------------------- temp herds
+#
+# A temp herd is a throwaway helper in a pane beside its caller, in the same tab so the person
+# can watch it. It gets HERD_RESULT (a file), writes its result there and ends with
+# `herd done`, which marks it finished and ends its agent; the pane closes with it. Members of
+# a group are recorded under $CACHE/temp/<group>/ (N.json: how to find it, N.md: its result,
+# N.md.done: finished), so `herd wait` still knows them after their terminals are gone.
+
+TEMP="$CACHE/temp"
+
+alive() {   # backend id
+  case $1 in
+    herdr|hc) hc get "$2" --json 2>/dev/null | jq -e '.state == "live"' >/dev/null 2>&1 ;;
+    tmux) tmux display-message -p -t "$2" '#{pane_id}' >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+end_terminal() {   # backend id
+  case $1 in
+    herdr|hc) hc kill "$2" >/dev/null 2>&1 || true ;;
+    tmux) tmux kill-pane -t "$2" 2>/dev/null || true ;;
+  esac
+}
+
+cmd_temp() {
+  local wait=0 group="" timeout=1800 place="" pane=""
+  local -a pass=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --wait) wait=1; shift ;;
+      --timeout) timeout=$2; shift 2 ;;
+      --group) group=$2; shift 2 ;;
+      --place) place=$2; shift 2 ;;
+      --pane) pane=$2; shift 2 ;;
+      --report|--no-report|--focus|--no-focus) pass+=("$1"); shift ;;
+      --) pass+=("$@"); break ;;
+      -*) [ $# -ge 2 ] || die "$1 needs a value"; pass+=("$1" "$2"); shift 2 ;;
+      *) pass+=(-- "$@"); break ;;
+    esac
+  done
+  [ -n "$group" ] || group="tmp-$(date +%H%M%S)-$(printf '%04x' "$RANDOM")"
+  case $group in */*|.*|"") die "bad group: $group" ;; esac
+  local dir="$TEMP/$group"; mkdir -p "$dir"
+  find "$TEMP" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+
+  # The first member opens beside the caller; later ones stack under the last live one, so a
+  # group stays one column next to whoever started it.
+  local n last lb lid
+  n=$(( $(find "$dir" -maxdepth 1 -name '*.json' | wc -l) + 1 ))
+  if [ -z "$place$pane" ]; then
+    place=right
+    last=$(ls -1 "$dir"/*.json 2>/dev/null | sort -V | tail -n1 || true)
+    if [ -n "$last" ]; then
+      lb=$(jq -r .backend "$last"); lid=$(jq -r .id "$last")
+      if alive "$lb" "$lid"; then
+        case $lb in
+          herdr) pane=$(herdr_where "$lid" | awk '{print $3}'); [ -n "$pane" ] && place=down ;;
+          tmux) pane=$lid; place=down ;;
+        esac
+      fi
+    fi
+  fi
+  [ -n "$place" ] || place=right
+
+  local out
+  out=$(start --place "$place" ${pane:+--pane "$pane"} --group "$group" --label herd.temp=1 \
+    --result "$dir/$n.md" "${pass[@]}") || exit 1
+  out=$(jq -c --arg g "$group" --arg r "$dir/$n.md" '. + {group: $g, result: $r}' <<<"$out")
+  printf '%s\n' "$out" > "$dir/$n.json"
+  printf '%s\n' "$out"
+  [ "$wait" = 1 ] && cmd_wait --timeout "$timeout" "$group"
+  return 0
+}
+
+cmd_swarm() {
+  local count="" wait=0 timeout=1800 group="" name=""
+  local -a angles=() pass=()
+  while [ $# -gt 0 ]; do
+    case $1 in
+      -n) count=$2; shift 2 ;;
+      --angle) angles+=("$2"); shift 2 ;;
+      --wait) wait=1; shift ;;
+      --timeout) timeout=$2; shift 2 ;;
+      --group) group=$2; shift 2 ;;
+      --name) name=$2; shift 2 ;;
+      --place|--pane|--key|--recipe) die "swarm doesn't take $1" ;;
+      --report|--no-report|--focus|--no-focus) pass+=("$1"); shift ;;
+      --) shift; break ;;
+      -*) [ $# -ge 2 ] || die "$1 needs a value"; pass+=("$1" "$2"); shift 2 ;;
+      *) break ;;
+    esac
+  done
+  local task="$*"
+  [ -n "$task" ] || die "no task given (herd swarm -n 3 -- \"the problem\")"
+  [ -n "$count" ] || count=${#angles[@]}
+  [ "$count" -gt 0 ] 2>/dev/null || count=3
+  [ "$count" -le 8 ] || die "a swarm of $count is a lot of agents; at most 8"
+  [ -n "$group" ] || group="swarm-$(date +%H%M%S)-$(printf '%04x' "$RANDOM")"
+  name=${name:-$(short_name "$task" | cut -c1-16)}
+
+  local i angle brief
+  for ((i = 1; i <= count; i++)); do
+    angle=${angles[i-1]:-}
+    if [ -n "$angle" ]; then
+      brief="You are worker $i of $count in a swarm, each on the same problem from a different angle.
+Your angle: $angle
+Stick to it: the others cover the rest, and the agent that started you compares the answers."
+    else
+      brief="You are worker $i of $count in a swarm, all on the same problem independently. Take
+your own approach rather than the most obvious one; the agent that started you compares the answers."
+    fi
+    cmd_temp --group "$group" --name "${name:-swarm} $i/$count" \
+      --desc "${angle:-worker $i of $count}" "${pass[@]}" -- "$task
+
+$brief"
+  done
+  [ "$wait" = 1 ] && cmd_wait --timeout "$timeout" "$group"
+  return 0
+}
+
+cmd_wait() {
+  local timeout=1800 q=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --timeout) timeout=$2; shift 2 ;;
+      -*) die "usage: herd wait [--timeout s] <group|id>" ;;
+      *) q=$1; shift ;;
+    esac
+  done
+  [ -n "$q" ] || die "usage: herd wait [--timeout s] <group|id>"
+  local -a files=()
+  if [ -d "$TEMP/$q" ]; then
+    mapfile -t files < <(ls -1 "$TEMP/$q"/*.json 2>/dev/null | sort -V)
+  else
+    mapfile -t files < <(grep -l -F "\"id\":\"$q\"" "$TEMP"/*/*.json 2>/dev/null | head -n1)
+  fi
+  [ ${#files[@]} -gt 0 ] || die "no temp herd or group: $q"
+
+  local start_s=$SECONDS f b id nm r pending warned=" " st code=0
+  while :; do
+    pending=0
+    for f in "${files[@]}"; do
+      r=$(jq -r .result "$f"); b=$(jq -r .backend "$f"); id=$(jq -r .id "$f")
+      if [ -e "$r.done" ]; then
+        alive "$b" "$id" && end_terminal "$b" "$id"   # its own close didn't take
+        continue
+      fi
+      alive "$b" "$id" || continue
+      pending=$((pending + 1))
+      if [ "$b" = herdr ] || [ "$b" = hc ]; then
+        st=$(hc get "$id" --json 2>/dev/null | jq -r '(.status | if type == "object" then .state else . end) // ""')
+        if [ "$st" = blocked ] && [[ $warned != *" $id "* ]]; then
+          warn "$(jq -r .name "$f") is waiting for a person (a permission prompt?): herd go $id"
+          warned="$warned$id "
+        fi
+      fi
+    done
+    [ "$pending" -eq 0 ] && break
+    if [ $((SECONDS - start_s)) -ge "$timeout" ]; then code=124; break; fi
+    sleep 2
+  done
+
+  for f in "${files[@]}"; do
+    r=$(jq -r .result "$f"); b=$(jq -r .backend "$f"); id=$(jq -r .id "$f"); nm=$(jq -r .name "$f")
+    if [ -e "$r.done" ]; then st=done
+    elif alive "$b" "$id"; then st="still running ($id)"
+    else st="ended without herd done"; fi
+    printf '## %s — %s\n' "$nm" "$st"
+    printf 'result file: %s\n\n' "$r"
+    if [ -s "$r" ]; then cat "$r"; else echo "(no result written)"; fi
+    printf '\n'
+  done
+  [ "$code" = 124 ] && warn "timed out after ${timeout}s; still running ones keep going (herd close --group $q to end them)"
+  return "$code"
+}
+
+cmd_done() {
+  local f="${HERD_RESULT:-}"
+  [ -n "$f" ] || die "not a temp herd (no HERD_RESULT); use herd report instead"
+  if [ "${1:-}" = --file ]; then
+    [ -f "${2:-}" ] || die "no such file: ${2:-}"; cp "$2" "$f"
+  elif [ $# -gt 0 ]; then
+    printf '%s\n' "$*" > "$f"
+  fi
+  [ -s "$f" ] || die "no result yet: write it to $f, or herd done \"<result>\""
+  : > "$f.done"
+  cmd_stage done done
+  echo "herd: result handed back; closing this pane"
+  # Detached and a moment late, so this call returns before the agent is ended.
+  if [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ]; then
+    setsid -f bash -c 'sleep 2; tmux kill-pane -t "$0"' "$TMUX_PANE" >/dev/null 2>&1 </dev/null
+  elif [ -n "${HC_TERMINAL_ID:-}" ]; then
+    setsid -f bash -c 'sleep 2; hc kill "$0"' "$HC_TERMINAL_ID" >/dev/null 2>&1 </dev/null
+  fi
+}
+
 case ${1:-} in
   ""|-h|--help|help) usage ;;
-  ls) shift; cmd_ls "$@" ;;
+  ls|list) shift; cmd_ls "$@" ;;
   stage) shift; cmd_stage "$@" ;;
   report) shift; cmd_report "$@" ;;
   go) shift; go "${1:?usage: herd go <key|name|id>}" ;;
   close) shift; cmd_close "$@" ;;
+  temp) shift; cmd_temp "$@" ;;
+  swarm) shift; cmd_swarm "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
+  done) shift; cmd_done "$@" ;;
   start) shift; start "$@" ;;
   *) start "$@" ;;
 esac

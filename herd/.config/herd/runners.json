@@ -1,5 +1,6 @@
 {
   "claude": { "argv": ["claude", "--permission-mode", "auto"], "task": "arg" },
-  "codex":  { "argv": ["codex"], "task": "arg" },
+  "codex":  { "argv": ["codex"], "task": "arg",
+              "temp_args": ["-c", "projects={\"{at}\"={trust_level=\"trusted\"}}", "--sandbox", "workspace-write", "--add-dir", "{dir}"] },
   "pi":     { "argv": ["pi"], "task": "send" }
 }
