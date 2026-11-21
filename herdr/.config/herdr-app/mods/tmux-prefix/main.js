@@ -5,7 +5,7 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, hc, props, closeOverlay, focused, theme, nextCommand, notify, openOverlay, spaces, panes, layout, shared } from "herdr";
+import { run, hc, props, closeOverlay, focused, theme, nextCommand, notify, openOverlay, spaces, panes, layout, shared, home } from "herdr";
 
 // tmux's `,` / `$`: herdr's own rename dialog (the shipped `prompt` mod), pre-filled.
 function rename(kind, f) {
@@ -36,12 +36,21 @@ function togglePanel(child, title, focus = false) {
   }
 }
 
+// Where the space was opened (a project's root, or travelsmart's Frontend): new windows start
+// there, while splits stay in the pane's own folder (its worktree). A space made without a
+// folder: its first tab's folder, else home.
+function spaceRoot(f) {
+  const s = spaces().find((x) => x.id === f?.space);
+  return s?.folder || panes().find((p) => p.tab === s?.tabs[0]?.id && p.cwd)?.cwd || home();
+}
+
 // Todos only where the assistant is set up (my-tabs checks for pa and its token).
 const todos = () => shared("todos.available") === true;
 
-// Every binding here comes from ~/.tmux.conf, except t, d and a (my sidebar views).
+// Every binding here comes from ~/.tmux.conf, except t, d and a (my sidebar views) and C.
 const BINDINGS = {
-  c: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
+  c: ["new window (space root)", (f) => run("terminal.open", { place: "tab", folder: spaceRoot(f) })],
+  C: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   V: ["split side by side", (f) => run("terminal.open", { place: "right", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   H: ["split stacked", (f) => run("terminal.open", { place: "down", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   h: ["pane left", () => run("pane.go", { direction: "left" })],
@@ -104,6 +113,7 @@ export default class TmuxPrefix extends View {
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(h_flex().flex_wrap().gap_x(14).gap_y(6)
         .child(chip("c", "new"))
+        .child(chip("C", "new here"))
         .child(chip("V", "split │"))
         .child(chip("H", "split ─"))
         .child(chip("hjkl", "move"))
