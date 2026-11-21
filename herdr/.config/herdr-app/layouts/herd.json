@@ -156,10 +156,10 @@
                       }
                     },
                     {
-                      "id": "this-space",
+                      "id": "space-panel",
                       "type": "block",
                       "content": {
-                        "mod": "this-space"
+                        "mod": "space-panel"
                       }
                     }
                   ],

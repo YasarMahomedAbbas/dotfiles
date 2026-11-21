@@ -1,5 +1,5 @@
-// This space (C-f a, or the panel's "This space" button): a card per agent in the shown
-// space, most urgent first. Each card: tab number, name and worktree branch; state and how
+// Space (C-f a, or the panel's "Space" button). It always opens on This space: a card per
+// agent in the shown space, most urgent first. Each card: tab number, name and worktree branch; state and how
 // long it's been in it; what it's working on (the ticket's title, else the title Claude gives
 // its terminal); how far along (the pipeline's stages from the ticket, else Claude's task
 // list); and what it's doing now (the question and its options, the tool in flight timed
@@ -13,8 +13,13 @@
 // Sessions started before the mod wrote that field fall back to the folder, when only one
 // agent and one entry share it.
 //
-// Keys (when focused): j/k or ↑/↓ move, ⏎ go to the agent, 1-9 answer its question,
-// v by attention / by tab, i show or fold the idle ones, h/esc back to the terminal.
+// "‹ Spaces" (or s) goes to All spaces: one row per space with its session count and how
+// many need you, are working, are done or idle, plus what the most urgent one is about.
+// Picking a row shows that space in herdr and comes back to This space.
+//
+// Keys (when focused): j/k or ↑/↓ move, ⏎ go, 1-9 answer the selected question,
+// v by attention / by tab, i show or fold the idle ones, s all spaces, h/esc back to the
+// terminal (in All spaces: back to This space).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
@@ -36,7 +41,7 @@ function find(node, id) {
 // Is this view the one the panel shows?
 function shown() {
   const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
-  return Boolean(panel && !panel.hidden && body?.active === "this-space");
+  return Boolean(panel && !panel.hidden && body?.active === "space-panel");
 }
 
 // The agents mod's own cleaning: drops a status glyph/spinner before the title.
@@ -66,6 +71,8 @@ export default class Space extends View {
     this.byTab = false;
     this.showIdle = false;
     this.sel = null; // the selected card's terminal address
+    this.view = "this"; // "this" (the shown space) or "all" (every space)
+    this.spaceSel = null; // the selected row in All spaces
     this.handle = cx.focus_handle();
     this.scroll = ScrollHandle.new();
     if (checking()) return;
@@ -73,6 +80,8 @@ export default class Space extends View {
     // Checked every second, read every POLL_MS while shown, and at once when it's opened.
     cx.timer.every(1000, (cx) => {
       if (!shown()) { this.wasShown = false; return; }
+      // Every time the panel opens, it opens on This space.
+      if (!this.wasShown && this.view !== "this") { this.view = "this"; cx.notify(); }
       if (!this.wasShown || Date.now() - this.last >= POLL_MS) this.refresh(cx);
       this.wasShown = true;
     });
@@ -151,7 +160,27 @@ export default class Space extends View {
     return true;
   }
 
+  jump(s) {
+    if (!s) return;
+    this.view = "this";
+    if (!s.active) run("space.select", { id: s.id });
+  }
+
+  keyAll(e, cx) {
+    const list = spaces();
+    const at = Math.max(0, list.findIndex((s) => s.id === this.spaceSel));
+    const k = e.keystroke, n = list.length;
+    if (["j", "down", "ctrl-n", "ctrl-j"].includes(k) && n) this.spaceSel = list[(at + 1) % n].id;
+    else if (["k", "up", "ctrl-p", "ctrl-k"].includes(k) && n) this.spaceSel = list[(at + n - 1) % n].id;
+    else if (k === "enter") this.jump(list[at]);
+    else if (["escape", "h", "backspace", "s"].includes(k)) this.view = "this";
+    else return;
+    cx.stop_propagation();
+    cx.notify();
+  }
+
   key(e, cx) {
+    if (this.view === "all") return this.keyAll(e, cx);
     const list = this.visible ?? [];
     const at = Math.max(0, list.findIndex((c) => c.a.address === this.sel));
     const move = (d) => { const n = list.length; if (!n) return; this.sel = list[(at + d + n) % n].a.address; this.scroll.scroll_to_item((at + d + n) % n); };
@@ -161,6 +190,7 @@ export default class Space extends View {
     else if (k === "enter") this.go(list[at]);
     else if (k === "v") this.byTab = !this.byTab;
     else if (k === "i") this.showIdle = !this.showIdle;
+    else if (k === "s" || k === "backspace") { this.view = "all"; this.spaceSel = spaces().find((s) => s.active)?.id ?? null; }
     else if (k === "h" || k === "escape") run("pane.go", { direction: "left" });
     else if (/^[1-9]$/.test(k)) { if (!this.answer(list[at], k)) return; }
     else return;
@@ -303,8 +333,74 @@ export default class Space extends View {
       .when(Boolean(kids), (e) => e.child(kids));
   }
 
+  navButton(t, id, label, action) {
+    return div().id(id).flex_none().px(6).h(20).rounded(5).flex().items_center().cursor_pointer()
+      .text_size(11).text_color(t.muted).bg(t.raised).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => { cx.stop_propagation(); action(); this.handle.focus(); cx.notify(); })
+      .child(label);
+  }
+
+  // All spaces: a row per space, in herdr's order.
+  renderAll(t) {
+    const list = spaces();
+    if (!list.some((s) => s.id === this.spaceSel)) this.spaceSel = list.find((s) => s.active)?.id ?? list[0]?.id ?? null;
+    const focused = this.handle.is_focused?.() ?? false;
+    const stateColor = (st) => (st === "idle" ? t.dim : t[st === "background" ? "working" : st] ?? t.dim);
+    const total = { blocked: 0, working: 0, done: 0, idle: 0 };
+    const rows = list.map((s) => {
+      const cards = this.order(this.cards(s));
+      const n = (st) => cards.filter((c) => c.state === st || (st === "working" && c.state === "background")).length;
+      const counts = { blocked: n("blocked"), working: n("working"), done: n("done"), idle: n("idle") };
+      for (const k of Object.keys(total)) total[k] += counts[k];
+      const top = cards[0];
+      const sel = s.id === this.spaceSel;
+      const chip = (st, label) => counts[st] > 0
+        ? h_flex().flex_none().gap(4).items_center().text_size(11).text_color(st === "idle" ? t.dim : stateColor(st))
+          .child(st === "working"
+            ? svg("mods/workspace-chrome/spinner.svg").size(10).text_color(t.working).spin(900)
+            : st === "idle" ? div().size(7).rounded(4).border(1.5).border_color(t.idle ?? t.dim) : div().size(7).rounded(4).bg(stateColor(st)))
+          .child(`${counts[st]}${label ? " " + label : ""}`)
+        : null;
+      const chips = [chip("blocked", "on hold"), chip("working", ""), chip("done", "done"), chip("idle", "idle")].filter(Boolean);
+      // What the most urgent agent is about, when one isn't idle.
+      let about = null;
+      if (top && top.state !== "idle") {
+        const h = this.headline(top);
+        const q = top.state === "blocked" ? top.b?.attention?.title || top.b?.attention?.text : null;
+        about = `${top.tab?.name ?? top.a.tab_name}: ${q ? clip(q, 80) : clip((h.issue ? h.issue + " " : "") + h.text, 90)}`;
+      }
+      return v_flex().id(`space-${s.id}`).flex_none().px(10).py(8).gap(4).rounded(8).cursor_pointer()
+        .border(1).border_color(sel && focused ? t.accent : t.border).bg(sel ? t.selected : t.background)
+        .hover((x) => x.bg(t.hover))
+        .on_click((_e, cx) => { this.spaceSel = s.id; this.jump(s); cx.notify(); })
+        .child(h_flex().gap(8).items_center().min_w(0)
+          .child(div().size(8).flex_none().rounded(4).bg(top ? stateColor(top.state) : t.border))
+          .child(div().flex_none().max_w(150).truncate().font_semibold().text_color(t.foreground).child(s.name))
+          .when(s.active, (e) => e.child(div().flex_none().text_size(10.5).text_color(t.accent).child("here")))
+          .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(s.branch ?? ""))
+          .child(div().flex_none().text_size(11).text_color(t.muted).child(`${cards.length} ${cards.length === 1 ? "session" : "sessions"}`)))
+        .when(chips.length > 0, (e) => e.child(h_flex().flex_wrap().gap_x(10).gap_y(2).pl(16).children(chips)))
+        .when(Boolean(about), (e) => e.child(div().pl(16).truncate().text_size(11.5).text_color(top.state === "blocked" ? t.foreground : t.muted).child(about)));
+    });
+    const summary = [["blocked", "on hold"], ["working", "working"], ["done", "done"], ["idle", "idle"]].filter(([k]) => total[k] > 0)
+      .map(([k, label]) => h_flex().gap(5).items_center().child(div().size(7).rounded(4).bg(stateColor(k))).child(`${total[k]} ${label}`));
+    return v_flex().id("space").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
+      .on_mouse_down("left", () => this.handle.focus())
+      .size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_size(12.5).text_color(t.foreground)
+      .child(v_flex().flex_none().px(14).pt(10).pb(8).gap(5).border_b(1).border_color(t.border)
+        .child(h_flex().gap(8).items_center()
+          .child(this.navButton(t, "to-this", "‹ This space", () => { this.view = "this"; }))
+          .child(div().font_semibold().text_size(13.5).text_color(t.foreground).child("All spaces")))
+        .when(summary.length > 0, (e) => e.child(h_flex().flex_wrap().gap_x(12).gap_y(2).text_size(11).text_color(t.muted).children(summary))))
+      .child(v_flex().id("space-rows").flex_1().min_h(0).p(8).gap(6).overflow_y_scrollbar().children(rows))
+      .child(h_flex().flex_none().h(22).px(12).items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(t.dim)
+        .child("j/k move · ⏎ go to space · esc back"));
+  }
+
   render() {
     const t = theme();
+    if (this.view === "all") return this.renderAll(t);
     const space = spaces().find((s) => s.active);
     const all = this.order(this.cards(space));
     const idle = all.filter((c) => c.state === "idle");
@@ -322,6 +418,7 @@ export default class Space extends View {
 
     const header = v_flex().flex_none().px(14).pt(10).pb(8).gap(5).border_b(1).border_color(t.border)
       .child(h_flex().gap(8).items_center()
+        .child(this.navButton(t, "to-all", "‹ Spaces", () => { this.view = "all"; this.spaceSel = space?.id ?? null; }))
         .child(div().font_semibold().text_size(13.5).text_color(t.foreground).truncate().child(space?.name ?? "No space"))
         .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(space?.branch ?? ""))
         .child(div().id("order").flex_none().px(6).rounded(5).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
@@ -366,6 +463,6 @@ export default class Space extends View {
       .child(v_flex().id("cards").flex_1().min_h(0).p(8).gap(8).overflow_y_scrollbar().track_scroll(this.scroll).children(cards))
       .when(Boolean(footer), (e) => e.child(footer))
       .child(h_flex().flex_none().h(22).px(12).items_center().border_t(1).border_color(t.border).text_size(10.5).text_color(t.dim)
-        .child("j/k move · ⏎ go · 1-9 answer · v order · i idle"));
+        .child("j/k move · ⏎ go · 1-9 answer · v order · i idle · s spaces"));
   }
 }

@@ -62,7 +62,7 @@ const BINDINGS = {
   x: ["close pane", () => run("pane.close", {})],
   t: ["tickets panel", () => togglePanel("tickets", "Tickets")],
   d: ["todos panel", () => togglePanel("todos", "Todos")], // only where todos() holds
-  a: ["this space panel", () => togglePanel("this-space", "This space", true)],
+  a: ["space panel", () => togglePanel("space-panel", "Space", true)],
   s: ["session picker", () => run("mod.open", { name: "sessions" })],
   ",": ["rename window", (f) => rename("tab", f)],
   "$": ["rename session", (f) => rename("space", f)],
@@ -123,7 +123,7 @@ export default class TmuxPrefix extends View {
         .child(chip("s", "sessions"))
         .child(chip("t", "tickets"))
         .when(todos(), (e) => e.child(chip("d", "todos")))
-        .child(chip("a", "this space"))
+        .child(chip("a", "space"))
         .child(chip(",", "rename"))
         .child(chip("$", "rename session"))
         .child(chip("C-f", "send C-f")));
