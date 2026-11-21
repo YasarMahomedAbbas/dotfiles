@@ -89,9 +89,9 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const todos = shared("todos.available") === true;
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "tickets", ...(todos ? ["todos"] : [])];
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "tickets", ...(todos ? ["todos"] : []), "this-space"];
     this.syncPanel(space, panel, body, enabled);
-    const panelButton = (id, label, icon) => {
+    const panelButton = (id, label, icon, badge = 0) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
@@ -99,8 +99,11 @@ export default class Tabs extends View {
         .on_click(() => {
           if (on) run("layout.hide", { id: "panel" });
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14)).child(label);
+        }).child(svg(icon).size(14)).child(label)
+        .when(badge > 0, el => el.child(div().px(5).h(15).rounded(8).bg(t.blocked).text_color(t.background).text_size(10).font_bold().flex().items_center().child(String(badge))));
     };
+    // This space's button counts the tabs in this space that need you, panel open or not.
+    const needYou = shown.filter(c => c.status === "blocked").length;
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
@@ -110,6 +113,7 @@ export default class Tabs extends View {
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .child(panelButton("tickets", "Tickets", "my-icons/my-tabs/tickets.svg"))
       .when(todos, el => el.child(panelButton("todos", "Todos", "my-icons/my-tabs/todos.svg")))
+      .child(panelButton("this-space", "This space", "my-icons/this-space/this-space.svg", needYou))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("my-icons/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`my-icons/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("my-icons/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

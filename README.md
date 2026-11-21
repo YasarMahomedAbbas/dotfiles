@@ -19,8 +19,9 @@ dotfiles/
   gh-dash/    → ~/.config/gh-dash/
   herd/       → ~/.local/bin/herd, ~/.config/herd/, ~/.claude/skills/herd, ~/.codex/skills/herd,
                ~/.config/herdr-app/mods/herd-pane   ("do X in a herd": start an agent in a tab/pane; see docs/herd.md)
-  herdr/      → ~/.config/herdr-app/{keys.json, layouts/herd.json, mods/{tmux-prefix,sessions,tickets,todos,my-tabs}},
-               ~/.local/bin/herdr-icons   (my herdr setup: Ctrl+F prefix, session picker, tickets and todos sidebar views;
+  herdr/      → ~/.config/herdr-app/{keys.json, layouts/herd.json, mods/{tmux-prefix,sessions,tickets,todos,this-space,my-tabs}},
+               ~/.local/bin/herdr-icons   (my herdr setup: Ctrl+F prefix, session picker, tickets, todos and This space
+               (C-f a: every agent in the space, its pipeline stage and what it's doing; reads `board list --json`) sidebar views;
                herdr itself is installed separately. herdr won't load icons through a symlink, so run `herdr-icons`
                after stowing herdr/herd and whenever an icon changes: it copies them to ~/.config/herdr-app/my-icons/)
   claude/     → ~/.claude/{CLAUDE.md,statusline-command.sh}   (global Claude instructions + Claude Code status line: model · dir · branch · ctx bar · 5h limit;

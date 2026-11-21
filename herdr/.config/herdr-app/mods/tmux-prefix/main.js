@@ -20,7 +20,7 @@ function rename(kind, f) {
 
 // A view in the right-hand sidebar (where Files and Changes live): show it, or hide the
 // sidebar when it's already showing.
-function togglePanel(child, title) {
+function togglePanel(child, title, focus = false) {
   const find = (n, id) => (!n ? null : n.id === id ? n : (n.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null);
   const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
   if (!panel || !(body?.children ?? []).some((c) => c.id === child)) {
@@ -28,13 +28,18 @@ function togglePanel(child, title) {
     return;
   }
   if (!panel.hidden && body.active === child) run("layout.hide", { id: "panel" });
-  else { run("layout.select", { stack: "panel-body", child }); run("layout.show", { id: "panel" }); }
+  else {
+    run("layout.select", { stack: "panel-body", child });
+    run("layout.show", { id: "panel" });
+    // A focusable view takes the keyboard, so j/k and 1-9 work at once.
+    if (focus) run(`${child}.focus`);
+  }
 }
 
 // Todos only where the assistant is set up (my-tabs checks for pa and its token).
 const todos = () => shared("todos.available") === true;
 
-// Every binding here comes from ~/.tmux.conf, except t and d (my sidebar views).
+// Every binding here comes from ~/.tmux.conf, except t, d and a (my sidebar views).
 const BINDINGS = {
   c: ["new window (here)", (f) => run("terminal.open", { place: "tab", ...(f?.cwd ? { folder: f.cwd } : {}) })],
   V: ["split side by side", (f) => run("terminal.open", { place: "right", ...(f?.cwd ? { folder: f.cwd } : {}) })],
@@ -48,6 +53,7 @@ const BINDINGS = {
   x: ["close pane", () => run("pane.close", {})],
   t: ["tickets panel", () => togglePanel("tickets", "Tickets")],
   d: ["todos panel", () => togglePanel("todos", "Todos")], // only where todos() holds
+  a: ["this space panel", () => togglePanel("this-space", "This space", true)],
   s: ["session picker", () => run("mod.open", { name: "sessions" })],
   ",": ["rename window", (f) => rename("tab", f)],
   "$": ["rename session", (f) => rename("space", f)],
@@ -107,6 +113,7 @@ export default class TmuxPrefix extends View {
         .child(chip("s", "sessions"))
         .child(chip("t", "tickets"))
         .when(todos(), (e) => e.child(chip("d", "todos")))
+        .child(chip("a", "this space"))
         .child(chip(",", "rename"))
         .child(chip("$", "rename session"))
         .child(chip("C-f", "send C-f")));

@@ -154,6 +154,13 @@
                       "content": {
                         "mod": "todos"
                       }
+                    },
+                    {
+                      "id": "this-space",
+                      "type": "block",
+                      "content": {
+                        "mod": "this-space"
+                      }
                     }
                   ],
                   "active": "files"
