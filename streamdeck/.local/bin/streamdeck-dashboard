@@ -13,6 +13,7 @@ Main page
   key 8     VPS page: one key per hc machine, opens or shows a space on it
   key 9     DESIGN: lit when a session published a design canvas, opens the newest
   key 10    PICK: herdr's sessions picker   key 11 THEME page
+  key 12    AWAKE: toggles `stay-awake` (lit while the PC won't suspend)
   key 13    MIC mute                        key 14 output MUTE
 
 Agent state comes from herdr (`herdr-app ls`, or `hc ls` while the window is closed),
@@ -50,7 +51,7 @@ POLL = 1.0                      # seconds between polls
 BRIGHTNESS = 70                 # 0-100
 SPACE_SLOTS = list(range(5))    # main page: keys 0-4 -> herdr spaces
 MEDIA_KEY, WORK_KEY, AGENTS_KEY, VPS_KEY, DESIGN_KEY = 5, 6, 7, 8, 9
-PICK_KEY, THEME_KEY, MIC_KEY, MUTE_KEY = 10, 11, 13, 14
+PICK_KEY, THEME_KEY, AWAKE_KEY, MIC_KEY, MUTE_KEY = 10, 11, 12, 13, 14
 BACK_KEY = 10                   # every sub-page: back to the main page
 PAGE_SLOTS = list(range(10))    # work + theme pages: keys 0-9
 VPS_SLOTS = [6, 8]              # VPS page: centred in the middle row
@@ -122,6 +123,7 @@ COLORS = {
 
 # nerd-font glyphs
 G_SEARCH, G_EYEDROP, G_BRUSH = "", "", ""
+G_AWAKE, G_SLEEP = "", ""   # coffee / moon
 G_MIC, G_MIC_OFF = "", ""
 G_VOL, G_VOL_DOWN, G_VOL_OFF = "", "", ""
 G_MUSIC, G_BRIEFCASE, G_CLOUD, G_SERVER = "", "", "", ""
@@ -267,6 +269,12 @@ def toggle_mute(target):
 
 
 MIC, SINK = "@DEFAULT_AUDIO_SOURCE@", "@DEFAULT_AUDIO_SINK@"
+
+
+# ── stay awake ───────────────────────────────────────────────────────────────
+def awake():
+    """True while `stay-awake` holds its sleep inhibitor."""
+    return sh("systemctl", "--user", "is-active", "--quiet", "stay-awake.service").returncode == 0
 
 
 def player_playing():
@@ -890,6 +898,12 @@ class Dashboard:
             put(DESIGN_KEY, render_action, G_BRUSH, "DESIGN", COLORS["textdim"])
         put(PICK_KEY, render_action, G_SEARCH, "PICK", on=open_picker)
         put(THEME_KEY, render_action, G_EYEDROP, "THEME", on=self.goto("themes"))
+        if awake():
+            put(AWAKE_KEY, render_action, G_AWAKE, "AWAKE", COLORS["done"], COLORS["done"],
+                on=lambda: sh("stay-awake", "off"))
+        else:
+            put(AWAKE_KEY, render_action, G_SLEEP, "SLEEP", None,
+                on=lambda: sh("stay-awake", "on"))
         self._mute_key(put, MIC_KEY, MIC, G_MIC, G_MIC_OFF, "MIC")
         self._mute_key(put, MUTE_KEY, SINK, G_VOL, G_VOL_OFF, "MUTE")
 
