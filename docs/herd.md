@@ -58,10 +58,12 @@ Every herd is the same handful of settings, each with a default:
 | runner arguments | `--arg <a>` (repeatable) | extra argv for the runner, after its own and before the task | none |
 | key | `--key <k>` | dedupe key and the `herd.key` label; a live herd with it is reused | the recipe's, else none |
 | keep awake | `--inhibit "<why>"` | runs the agent under `systemd-inhibit` | the recipe's, else none |
+| no task | `--no-task` | starts the agent idle, with no first message and no `-- "task"` (a session someone talks to later); not with `--report` or `--result` | off: a task is required |
 
 ```
 herd [--place tab|right|down|space|bg] [--at <folder|project>] [--runner claude|codex|pi]
      [--name "…"] [--desc "…"] [--report] [--recipe <name>] [--backend …] -- "the task"
+herd [options] --no-task                     # the agent idle, no first message
 herd ls [--group <id>] [--recipe ticket]     # live herds, JSON with --json
 herd stage <stage> [running|blocked|done]    # from inside a herd: update its labels
 herd close <name|id>                         # end it and close its tab/pane

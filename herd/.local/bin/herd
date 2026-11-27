@@ -44,6 +44,7 @@ Options for starting a herd:
   --arg <a>                         an extra argument for the runner, before the task (repeatable)
   --key <k>                         dedupe key (a live herd with it is reused), unless a recipe sets one
   --inhibit "<why>"                 keep the machine awake while it runs, unless a recipe sets it
+  --no-task                         start the agent idle, with no first message (no -- "task")
   --recipe <name>                   a file in ~/.config/herd/recipes/
   --report                          it reports back to whoever started it
   --backend herdr|hc|tmux|here      override detection
@@ -210,7 +211,7 @@ start() {
   local dashdash=
   local opt_place="" opt_at="" opt_project="" opt_runner="" opt_name="" opt_desc="" opt_tab="" opt_pane=""
   local opt_group="" opt_recipe="" opt_report=0 opt_focus="" opt_labels="{}"
-  local opt_args="[]" opt_key="" opt_inhibit="" opt_result=""
+  local opt_args="[]" opt_key="" opt_inhibit="" opt_result="" opt_no_task=0
   opt_backend=""
   while [ $# -gt 0 ]; do
     case $1 in
@@ -228,6 +229,7 @@ start() {
       --arg) opt_args=$(jq -c --arg a "$2" '. + [$a]' <<<"$opt_args"); shift 2 ;;
       --key) opt_key=$2; shift 2 ;;
       --inhibit) opt_inhibit=$2; shift 2 ;;
+      --no-task) opt_no_task=1; shift ;;
       --recipe) opt_recipe=$2; shift 2 ;;
       --report) opt_report=1; shift ;;
       --result) opt_result=$2; shift 2 ;;
@@ -276,7 +278,13 @@ start() {
   fi
 
   [ -n "$(rget task)" ] && task=$(rget task)
-  [ -n "$task" ] || die "no task given (herd -- \"what to do\")"
+  # --no-task starts the agent idle, with no first message (a session someone talks to later).
+  if [ "$opt_no_task" = 1 ]; then
+    [ -z "$task" ] || die "--no-task takes no task"
+    [ "$opt_report" = 0 ] && [ -z "$opt_result" ] || die "--no-task can't --report or --result: there's no task to report on"
+  else
+    [ -n "$task" ] || die "no task given (herd -- \"what to do\")"
+  fi
   local project="${opt_project:-$(rget project)}"
   local at="${opt_at:-$(rget at)}"
   if [ -z "$at" ] && [ -n "$project" ]; then
@@ -333,7 +341,7 @@ which hands the result back and closes this pane. Do nothing after it."
     '["env", "HERD_PARENT=\($p)", "HERD_BACKEND=\($b)", "HERD_KEY=\($k)", "HERD_NAME=\($n)"]')
   [ -n "$opt_result" ] && envs=$(jq -c --arg r "$opt_result" '. + ["HERD_RESULT=\($r)"]' <<<"$envs")
   local full
-  if [ "$mode" = arg ]; then
+  if [ "$mode" = arg ] && [ "$opt_no_task" = 0 ]; then
     full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --argjson x "$opt_args" --arg t "$task" '$e + $a + $x + [$t]')
   else
     full=$(jq -cn --argjson e "$envs" --argjson a "$argv" --argjson x "$opt_args" '$e + $a + $x')
@@ -373,7 +381,7 @@ which hands the result back and closes this pane. Do nothing after it."
   esac
   [ -n "$id" ] || die "launch failed"
 
-  if [ "$mode" = send ]; then
+  if [ "$mode" = send ] && [ "$opt_no_task" = 0 ]; then
     case $backend in
       herdr|hc) hc wait "$id" --timeout 60 >/dev/null 2>&1 || true; hc send "$id" "$task" >/dev/null ;;
       tmux) sleep 3; tmux send-keys -t "$id" -l "$task"; tmux send-keys -t "$id" Enter ;;
